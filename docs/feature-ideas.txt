@@ -1,0 +1,40 @@
+builderBrock Feature Ideas
+=====================
+
+HIGHLIGHT MODE (implemented)
+- Focus chat input → code viewer enters highlight mode
+- Click/drag line numbers to select specific lines
+- Only highlighted lines sent as AI context
+- Range badge shows selections (7...13  16...48)
+- Escape exits, sending clears and exits
+
+---
+
+WISHLISTZ
+- Scan current artifact and generate a punch list of improvements
+- Becomes a successive series of jobs for the AI to receive and implement
+- Work through changes one at a time, not piecemeal
+- Leverages existing revision history
+
+BACKDRAFT
+- Changed lines get an outline in the code viewer
+- Hovering them presents a chip with arrows
+- Arrows let you jump back through code versions
+- Revision data already exists in the database
+
+DIVINATION
+- Hit a button on an artifact
+- App finds all visible elements (buttons, headings, cards, inputs, sections)
+- For each element: render the full page in a mini iframe
+  - That element: position absolute, high z-index
+  - Everything else: visibility hidden, transparent backgrounds
+- Result: a grid/gallery of every element isolated on its own card
+- From there: examine, theme, or alter elements individually
+- No DOM extraction or source mapping needed — just CSS overrides
+- Name is perfect (DIV + divination)
+
+MEGACHOREZARD
+- Analysis of current artifact for what's missing to make it shippable
+- Suggestions and planning for turning an adequate artifact into a product
+- Accessibility, responsive breakpoints, SEO, performance, real content, etc.
+- Execution directive: AI works through the plan

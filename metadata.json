@@ -1,0 +1,6 @@
+{
+  "name": "builderBrock",
+  "description": "AI-powered UI builder with persistent project management. Generate, refine, and recall your designs.",
+  "requestFramePermissions": [],
+  "prompt": ""
+}

@@ -1,0 +1,1041 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Omneon Runtime</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: hsl(328, 52%, 6%); }
+  #app { width: 100%; height: 100%; }
+  #error-banner {
+    position: absolute; top: 0; left: 0; right: 0; display: none;
+    background: #7f1d1d; color: #fff; font: 12px ui-monospace, monospace;
+    padding: 8px 12px; white-space: pre-wrap; z-index: 10;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://esm.sh/three@0.170.0",
+    "three/addons/": "https://esm.sh/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app"></div>
+<div id="error-banner"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+
+/* ----------------------- asset library bridge ----------------------- */
+// The packager (step 15) rewrites this to a local ./assets folder.
+const ASSET_BASE = window.__ASSET_BASE__ || 'http://localhost:3001/api/assets';
+const assetUrl = (id) => `${ASSET_BASE}/${encodeURIComponent(id)}/file`;
+const textureLoader = new THREE.TextureLoader();
+const gltfLoader = new GLTFLoader();
+const rgbeLoader = new RGBELoader();
+const textureCache = new Map(); // assetId -> THREE.Texture
+let _pmrem = null;
+const pmrem = () => (_pmrem ||= new THREE.PMREMGenerator(renderer));
+
+function loadTexture(assetId) {
+  if (textureCache.has(assetId)) return textureCache.get(assetId);
+  const tex = textureLoader.load(assetUrl(assetId), t => { t.needsUpdate = true; });
+  tex.colorSpace = THREE.SRGBColorSpace;
+  textureCache.set(assetId, tex);
+  return tex;
+}
+
+/** Load an imported GLB/GLTF model into a placeholder object's slot. */
+function loadModelInto(obj, assetId) {
+  obj.userData.assetId = assetId;
+  gltfLoader.load(assetUrl(assetId), (gltf) => {
+    if (obj.userData.assetId !== assetId) return; // stale
+    // Normalize: center at origin, fit ~1 unit.
+    const inner = gltf.scene;
+    const box = new THREE.Box3().setFromObject(inner);
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    inner.scale.setScalar(1 / maxDim);
+    box.setFromObject(inner);
+    const center = box.getCenter(new THREE.Vector3());
+    inner.position.sub(center);
+    obj.clear();
+    obj.add(inner);
+  }, undefined, () => { /* keep placeholder on failure */ });
+}
+
+/* ============================ plumbing ============================ */
+
+const post = (event) => parent.postMessage({ source: 'omneon-runtime', ...event }, '*');
+
+window.addEventListener('error', (e) => {
+  post({ type: 'runtimeError', message: String(e.message), stack: e.error?.stack });
+});
+window.addEventListener('unhandledrejection', (e) => {
+  post({ type: 'runtimeError', message: `unhandled rejection: ${e.reason}` });
+});
+function showError(msg) {
+  const el = document.getElementById('error-banner');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+/* ============================ renderer ============================ */
+
+const container = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+container.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
+camera.position.set(4, 3, 6);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+
+const transformControls = new TransformControls(camera, renderer.domElement);
+transformControls.addEventListener('dragging-changed', (e) => {
+  controls.enabled = !e.value;
+  if (e.value) dragging = true;
+  else {
+    dragging = false;
+    const target = transformControls.object;
+    if (target && target.userData.nodeId) {
+      commitTransform(target.userData.nodeId, target);
+    }
+  }
+});
+transformControls.addEventListener('objectChange', () => {
+  const target = transformControls.object;
+  if (target && target.userData.nodeId && dragging) {
+    sendTransform(target.userData.nodeId, target, 'drag');
+  }
+});
+scene.add(transformControls);
+
+let dragging = false;
+
+function readTransform(obj) {
+  return {
+    position: { x: obj.position.x, y: obj.position.y, z: obj.position.z },
+    rotation: { x: obj.rotation.x, y: obj.rotation.y, z: obj.rotation.z },
+    scale: { x: obj.scale.x, y: obj.scale.y, z: obj.scale.z },
+  };
+}
+function sendTransform(nodeId, obj, phase) {
+  post({ type: 'transformChanged', id: nodeId, transform: readTransform(obj), phase });
+}
+function commitTransform(nodeId, obj) {
+  sendTransform(nodeId, obj, 'commit');
+}
+
+const viewportMode = { mode: 'single', secondary: 'top' }; // top | front | side | persp
+const cameras2 = {
+  // Secondary view cameras, refreshed per frame from world defaults.
+  top: () => makeCam(0.1, 18, 0.01),
+  front: () => makeCam(0, 1.5, 14),
+  side: () => makeCam(14, 1.5, 0),
+  persp: () => makeCam(10, 8, 10),
+};
+function makeCam(x, y, z) {
+  const c = new THREE.PerspectiveCamera();
+  const cd = document_?.world?.cameraDefault;
+  const t = cd?.target || { x: 0, y: 0, z: 0 };
+  c.position.set(x, y, z);
+  c.lookAt(t.x, t.y, t.z);
+  c.updateProjectionMatrix();
+  return c;
+}
+
+function renderViewports() {
+  const w = container.clientWidth || 1, h = container.clientHeight || 1;
+  if (viewportMode.mode === 'split') {
+    const half = Math.floor(w / 2);
+    renderer.setScissorTest(true);
+    // Left: main interactive camera.
+    camera.aspect = half / h;
+    camera.updateProjectionMatrix();
+    renderer.setViewport(0, 0, half, h);
+    renderer.setScissor(0, 0, half, h);
+    renderer.render(scene, camera);
+    // Right: secondary static view.
+    const cam = cameras2[viewportMode.secondary]?.() || cameras2.top();
+    cam.aspect = (w - half) / h;
+    cam.updateProjectionMatrix();
+    renderer.setViewport(half, 0, w - half, h);
+    renderer.setScissor(half, 0, w - half, h);
+    renderer.render(scene, cam);
+    renderer.setScissorTest(false);
+  } else {
+    renderer.setViewport(0, 0, w, h);
+    renderer.render(scene, camera);
+  }
+}
+
+function resize() {
+  const w = container.clientWidth || 1, h = container.clientHeight || 1;
+  renderer.setSize(w, h);
+  if (viewportMode.mode === 'split') { renderViewports(); return; }
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+
+/* ====================== document → three objects ====================== */
+
+let document_ = null;            // last SceneDocument received from host
+const objectById = new Map();    // nodeId -> THREE.Object3D
+const materialById = new Map();  // materialId -> THREE.Material
+let selection = [];
+
+const toneMappingMap = {
+  none: THREE.NoToneMapping, linear: THREE.LinearToneMapping,
+  reinhard: THREE.ReinhardToneMapping, cineon: THREE.CineonToneMapping,
+  aces: THREE.ACESFilmicToneMapping,
+};
+
+function buildGeometry(geo) {
+  switch (geo.type) {
+    case 'box': return new THREE.BoxGeometry(geo.width, geo.height, geo.depth);
+    case 'sphere': return new THREE.SphereGeometry(geo.radius, geo.widthSegments, geo.heightSegments);
+    case 'cylinder': return new THREE.CylinderGeometry(geo.radiusTop, geo.radiusBottom, geo.height, geo.radialSegments);
+    case 'plane': return new THREE.PlaneGeometry(geo.width, geo.height);
+    case 'cone': return new THREE.ConeGeometry(geo.radius, geo.height, geo.radialSegments);
+    case 'torus': return new THREE.TorusGeometry(geo.radius, geo.tube, geo.radialSegments, geo.tubularSegments);
+    case 'model': {
+      // Placeholder box until the asset library (step 10) resolves assetId.
+      return new THREE.BoxGeometry(1, 1, 1);
+    }
+    default: return new THREE.BoxGeometry(1, 1, 1);
+  }
+}
+
+function applyMaterialProps(mat, props) {
+  mat.color.set(props.color);
+  mat.metalness = props.metalness;
+  mat.roughness = props.roughness;
+  mat.opacity = props.opacity;
+  mat.transparent = props.transparent;
+  mat.emissive.set(props.emissive);
+  mat.emissiveIntensity = props.emissiveIntensity;
+  mat.wireframe = props.wireframe;
+  if (props.textureAssetId) {
+    mat.map = loadTexture(props.textureAssetId);
+  } else if (mat.map) {
+    mat.map = null;
+  }
+  mat.needsUpdate = true;
+}
+
+function buildMaterials(doc) {
+  materialById.clear();
+  for (const def of doc.materials || []) {
+    const mat = new THREE.MeshStandardMaterial();
+    applyMaterialProps(mat, def.props);
+    materialById.set(def.id, mat);
+  }
+}
+
+function materialForNode(node) {
+  if (node.materialOverride) {
+    const mat = new THREE.MeshStandardMaterial();
+    applyMaterialProps(mat, node.materialOverride);
+    return mat;
+  }
+  if (node.materialId && materialById.has(node.materialId)) return materialById.get(node.materialId);
+  return new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.8, metalness: 0.1 });
+}
+
+function buildLight(node) {
+  const d = node.light;
+  let light;
+  switch (d.type) {
+    case 'ambient': light = new THREE.AmbientLight(d.color, d.intensity); break;
+    case 'point': light = new THREE.PointLight(d.color, d.intensity); break;
+    case 'spot': light = new THREE.SpotLight(d.color, d.intensity); break;
+    case 'hemisphere': light = new THREE.HemisphereLight(d.color, '#444444', d.intensity); break;
+    default: light = new THREE.DirectionalLight(d.color, d.intensity);
+  }
+  light.castShadow = !!d.castShadow;
+  return light;
+}
+
+function applyTransform(obj, t) {
+  obj.position.set(t.position.x, t.position.y, t.position.z);
+  obj.rotation.set(t.rotation.x, t.rotation.y, t.rotation.z);
+  obj.scale.set(t.scale.x, t.scale.y, t.scale.z);
+}
+
+function applyWorld(doc) {
+  const w = doc.world;
+  scene.background = new THREE.Color(w.backgroundColor);
+  scene.fog = w.fog.enabled ? new THREE.Fog(w.fog.color, w.fog.near, w.fog.far) : null;
+  renderer.toneMapping = toneMappingMap[w.toneMapping] ?? THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = w.toneMappingExposure;
+  // Environment map from an imported HDR/EXR asset.
+  if (w.environmentAssetId && w.environmentAssetId !== applyWorld._envId) {
+    applyWorld._envId = w.environmentAssetId;
+    rgbeLoader.load(assetUrl(w.environmentAssetId), (tex) => {
+      const envMap = pmrem().fromEquirectangular(tex).texture;
+      scene.environment = envMap;
+      tex.dispose();
+    }, undefined, () => { applyWorld._envId = null; });
+  } else if (!w.environmentAssetId && applyWorld._envId) {
+    applyWorld._envId = null;
+    scene.environment = null;
+  }
+  // Ground
+  const existing = scene.getObjectByName('__ground__');
+  if (existing) scene.remove(existing);
+  if (w.ground.enabled) {
+    const mat = w.ground.materialId && materialById.has(w.ground.materialId)
+      ? materialById.get(w.ground.materialId)
+      : new THREE.MeshStandardMaterial({ color: 0x2a2d36, roughness: 1 });
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(w.ground.size, w.ground.size), mat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    ground.name = '__ground__';
+    ground.userData.internal = true;
+    scene.add(ground);
+  }
+}
+
+function clearSceneObjects() {
+  for (const [, obj] of objectById) scene.remove(obj);
+  objectById.clear();
+}
+
+/** Full rebuild: structural changes only. Camera/controls untouched. */
+function rebuildScene(doc) {
+  buildMaterials(doc);
+  applyWorld(doc);
+  clearSceneObjects();
+  const nodesById = new Map((doc.nodes || []).map(n => [n.id, n]));
+  for (const node of doc.nodes || []) {
+    let obj;
+    if (node.kind === 'light') obj = buildLight(node);
+    else if (node.kind === 'camera') obj = new THREE.Group(); // camera preview helper lands later
+    else if (node.kind === 'group' || node.kind === 'customScript') obj = new THREE.Group();
+    else {
+      if (node.geometry && node.geometry.type === 'model') {
+        // Placeholder group; GLTF swapped in asynchronously.
+        obj = new THREE.Group();
+        obj.add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1),
+          new THREE.MeshStandardMaterial({ color: 0x888888, wireframe: true })));
+        loadModelInto(obj, node.geometry.assetId);
+      } else {
+        obj = new THREE.Mesh(buildGeometry(node.geometry || { type: 'box' }), materialForNode(node));
+      }
+      obj.castShadow = true;
+      obj.receiveShadow = true;
+    }
+    obj.name = node.name;
+    obj.userData.nodeId = node.id;
+    obj.visible = node.visible;
+    applyTransform(obj, node.transform);
+    objectById.set(node.id, obj);
+  }
+  // Attach hierarchy
+  for (const node of doc.nodes || []) {
+    const obj = objectById.get(node.id);
+    if (node.parentId && objectById.has(node.parentId)) objectById.get(node.parentId).add(obj);
+    else scene.add(obj);
+  }
+  // Selection helpers refreshed
+  updateSelectionHelpers();
+  // Physics bodies track structural changes.
+  if (physics.ready && physics.world) buildPhysicsWorld();
+}
+
+/* ====================== incremental patching ====================== */
+
+const STRUCTURAL_OPS = new Set([
+  'node.add', 'node.remove', 'node.reparent', 'node.duplicate',
+  'node.setGeometry', 'material.define', 'material.assign',
+  'material.setOverride', 'interaction.connect', 'interaction.disconnect',
+  'physics.configure', 'camera.setActive', 'script.set',
+]);
+
+function applyOperationsIncremental(ops, doc) {
+  const needsRebuild = ops.some(op => STRUCTURAL_OPS.has(op.op));
+  if (needsRebuild) { rebuildScene(doc); return; }
+  for (const op of ops) {
+    switch (op.op) {
+      case 'node.transform': {
+        const obj = objectById.get(op.id);
+        if (!obj) break;
+        const node = doc.nodes.find(n => n.id === op.id);
+        if (node) applyTransform(obj, node.transform);
+        break;
+      }
+      case 'node.setVisible': {
+        const obj = objectById.get(op.id);
+        if (obj) obj.visible = op.visible;
+        break;
+      }
+      case 'node.rename': {
+        const obj = objectById.get(op.id);
+        if (obj) obj.name = op.name;
+        break;
+      }
+      case 'material.update': {
+        const def = doc.materials.find(m => m.id === op.materialId);
+        const mat = materialById.get(op.materialId);
+        if (def && mat) applyMaterialProps(mat, def.props);
+        break;
+      }
+      case 'world.update': {
+        applyWorld(doc);
+        break;
+      }
+      // animation ops: runtime playback recompiles tracks (step 11)
+      default: break;
+    }
+  }
+}
+
+/* =========================== selection =========================== */
+
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+const selectionHelpers = new Map();
+
+function updateSelectionHelpers() {
+  for (const [, h] of selectionHelpers) scene.remove(h);
+  selectionHelpers.clear();
+  for (const id of selection) {
+    const obj = objectById.get(id);
+    if (!obj) continue;
+    const helper = new THREE.BoxHelper(obj, 0xffaa33);
+    helper.userData.internal = true;
+    scene.add(helper);
+    selectionHelpers.set(id, helper);
+  }
+  // Attach transform gizmo to the first selected mesh/group
+  const targetId = selection.find(id => {
+    const n = document_?.nodes.find(x => x.id === id);
+    return n && !n.locked && (n.kind === 'mesh' || n.kind === 'group');
+  });
+  if (targetId && transformMode) transformControls.attach(objectById.get(targetId));
+  else transformControls.detach();
+}
+
+function pickAt(clientX, clientY) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  const roots = [...objectById.values()].filter(o => !o.parent || o.parent === scene);
+  const hits = raycaster.intersectObjects(roots, true);
+  for (const hit of hits) {
+    let obj = hit.object;
+    while (obj && !obj.userData.nodeId) obj = obj.parent;
+    if (obj) {
+      return { id: obj.userData.nodeId, point: { x: hit.point.x, y: hit.point.y, z: hit.point.z } };
+    }
+  }
+  return null;
+}
+
+let downPos = null;
+let selectionMode = 'point';
+const lassoBox = document.createElement('div');
+lassoBox.style.cssText = 'position:absolute;border:1px dashed #ffaa33;background:rgba(255,170,51,0.08);display:none;pointer-events:none;z-index:4;';
+container.appendChild(lassoBox);
+
+function projectToScreen(obj) {
+  const v = new THREE.Vector3();
+  obj.getWorldPosition(v).project(camera);
+  const rect = renderer.domElement.getBoundingClientRect();
+  return {
+    x: rect.left + (v.x + 1) / 2 * rect.width,
+    y: rect.top + (1 - (v.y + 1) / 2) * rect.height,
+  };
+}
+
+/** Unproject a screen point to the y=0 world plane. */
+function screenToGround(clientX, clientY) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+    ((clientX - rect.left) / rect.width) * 2 - 1,
+    -((clientY - rect.top) / rect.height) * 2 + 1
+  );
+  raycaster.setFromCamera(ndc, camera);
+  const t = -raycaster.ray.origin.y / raycaster.ray.direction.y;
+  if (!isFinite(t)) return null;
+  const p = raycaster.ray.origin.clone().add(raycaster.ray.direction.clone().multiplyScalar(t));
+  return { x: p.x, y: 0, z: p.z };
+}
+
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  downPos = [e.clientX, e.clientY];
+  if (selectionMode === 'lasso') {
+    controls.enabled = false;
+    lassoBox.style.display = 'block';
+    const rect = container.getBoundingClientRect();
+    lassoBox.style.left = `${e.clientX - rect.left}px`;
+    lassoBox.style.top = `${e.clientY - rect.top}px`;
+    lassoBox.style.width = '0';
+    lassoBox.style.height = '0';
+  }
+});
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (!downPos || selectionMode !== 'lasso') return;
+  const rect = container.getBoundingClientRect();
+  const x0 = Math.min(downPos[0], e.clientX) - rect.left;
+  const y0 = Math.min(downPos[1], e.clientY) - rect.top;
+  const x1 = Math.max(downPos[0], e.clientX) - rect.left;
+  const y1 = Math.max(downPos[1], e.clientY) - rect.top;
+  lassoBox.style.left = `${x0}px`;
+  lassoBox.style.top = `${y0}px`;
+  lassoBox.style.width = `${x1 - x0}px`;
+  lassoBox.style.height = `${y1 - y0}px`;
+});
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (!downPos) return;
+  // In split view the right pane is a static secondary camera — not interactive.
+  if (viewportMode.mode === 'split') {
+    const r = renderer.domElement.getBoundingClientRect();
+    if (e.clientX > r.left + r.width / 2) { downPos = null; return; }
+  }
+  const start = downPos;
+  const moved = Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]);
+  downPos = null;
+
+  if (selectionMode === 'lasso') {
+    lassoBox.style.display = 'none';
+    controls.enabled = true;
+    if (moved <= 4) return;
+    const minX = Math.min(start[0], e.clientX), maxX = Math.max(start[0], e.clientX);
+    const minY = Math.min(start[1], e.clientY), maxY = Math.max(start[1], e.clientY);
+    const ids = [];
+    for (const [id, obj] of objectById) {
+      const s = projectToScreen(obj);
+      if (s.x >= minX && s.x <= maxX && s.y >= minY && s.y <= maxY) ids.push(id);
+    }
+    selection = ids;
+    updateSelectionHelpers();
+    const corners = [
+      screenToGround(minX, minY), screenToGround(maxX, minY),
+      screenToGround(maxX, maxY), screenToGround(minX, maxY),
+    ].filter(Boolean);
+    post({ type: 'lassoSelected', ids, region: corners });
+    return;
+  }
+
+  if (moved > 4 || dragging) return; // was a drag, not a click
+  const hit = pickAt(e.clientX, e.clientY);
+  if (hit) {
+    if (e.shiftKey) {
+      selection = selection.includes(hit.id) ? selection.filter(i => i !== hit.id) : [...selection, hit.id];
+    } else {
+      selection = [hit.id];
+    }
+  } else if (!e.shiftKey) {
+    selection = [];
+  }
+  updateSelectionHelpers();
+  post({ type: 'selectionChanged', ids: selection, point: hit?.point || null });
+  if (hit) fireInteractions(hit.id, 'click');
+});
+
+/* ===================== interaction behaviors (step 12) ===================== */
+
+/** Run all interactions of `trigger` type owned by nodeId (or scene-wide for timer/key). */
+function fireInteractions(nodeId, trigger, extra) {
+  if (!document_) return;
+  for (const node of document_.nodes || []) {
+    if (trigger === 'click' || trigger === 'hover' || trigger === 'collision') {
+      if (node.id !== nodeId) continue;
+    }
+    for (const ix of node.interactions || []) {
+      if (ix.trigger !== trigger) continue;
+      if (trigger === 'key' && extra?.key && ix.triggerParams?.key && ix.triggerParams.key !== extra.key) continue;
+      runAction(node, ix);
+    }
+  }
+}
+
+function runAction(ownerNode, ix) {
+  const p = ix.actionParams || {};
+  const targetId = p.nodeId || ownerNode.id;
+  const obj = objectById.get(targetId);
+  try {
+    switch (ix.action) {
+      case 'playClip': {
+        const node = document_.nodes.find(n => n.id === targetId);
+        const clip = node?.animations?.find(c => c.id === p.clipId) || node?.animations?.[0];
+        if (node && clip) {
+          playback.nodeId = node.id;
+          playback.clipId = clip.id;
+          playback.time = 0;
+          playback.playing = true;
+        }
+        break;
+      }
+      case 'toggleVisibility':
+        if (obj) obj.visible = !obj.visible;
+        break;
+      case 'setProperty':
+        if (obj && p.path) applyTrackValue(null, obj, p.path, p.value);
+        break;
+      case 'changeMaterial': {
+        if (!obj || !obj.isMesh) break;
+        if (p.materialId && materialById.has(p.materialId)) {
+          obj.material = materialById.get(p.materialId);
+        } else if (p.props) {
+          const mat = obj.material.clone();
+          applyMaterialProps(mat, { wireframe: false, ...mat, ...p.props });
+          obj.material = mat;
+        }
+        break;
+      }
+      case 'switchCamera': {
+        const camNode = document_.nodes.find(n => n.id === (p.cameraNodeId || targetId));
+        const camObj = camNode && objectById.get(camNode.id);
+        if (camObj) {
+          camera.position.copy(camObj.position);
+          camera.rotation.copy(camObj.rotation);
+          if (document_.world?.cameraDefault?.target) {
+            const t = document_.world.cameraDefault.target;
+            controls.target.set(t.x, t.y, t.z);
+          }
+          controls.update();
+        }
+        break;
+      }
+      case 'applyImpulse':
+        // Wired up with the physics engine in step 13.
+        if (obj && typeof obj.userData.applyImpulse === 'function') obj.userData.applyImpulse(p.impulse || { x: 0, y: 5, z: 0 });
+        break;
+      case 'emitEvent':
+        post({ type: 'interactionEvent', nodeId: ownerNode.id, interactionId: ix.id, name: p.event || ix.action });
+        break;
+      default: break;
+    }
+  } catch (err) {
+    post({ type: 'runtimeError', message: `interaction ${ix.id}: ${err.message || err}` });
+  }
+}
+
+// key triggers
+window.addEventListener('keydown', (e) => {
+  if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+  fireInteractions(null, 'key', { key: e.key });
+});
+
+// timer triggers: accumulate in animate() via interactionTimers
+const interactionTimers = new Map(); // `${nodeId}:${ixId}` -> elapsed
+function tickTimerInteractions(dt) {
+  if (!document_) return;
+  for (const node of document_.nodes || []) {
+    for (const ix of node.interactions || []) {
+      if (ix.trigger !== 'timer') continue;
+      const every = Number(ix.triggerParams?.every) || 1;
+      const key = `${node.id}:${ix.id}`;
+      const t = (interactionTimers.get(key) || 0) + dt;
+      if (t >= every) { interactionTimers.set(key, 0); runAction(node, ix); }
+      else interactionTimers.set(key, t);
+    }
+  }
+}
+
+// hover triggers (throttled pointermove raycast)
+let lastHoverId = null;
+let hoverCheckAt = 0;
+renderer.domElement.addEventListener('pointermove', (e) => {
+  const now = performance.now();
+  if (now < hoverCheckAt) return;
+  hoverCheckAt = now + 120;
+  const hit = pickAt(e.clientX, e.clientY);
+  const id = hit?.id || null;
+  if (id !== lastHoverId) {
+    lastHoverId = id;
+    if (id) fireInteractions(id, 'hover');
+  }
+});
+
+/* ===================== physics (step 13, Rapier WASM) ===================== */
+
+const physics = {
+  ready: false, running: false, loading: false,
+  RAPIER: null, world: null, eventQueue: null,
+  bodies: new Map(),      // nodeId -> rapier body
+  colliderNode: new Map(),// collider handle -> nodeId
+  bake: null,             // { frames: Map<nodeId, keys[]>, fps, t, acc, duration }
+};
+
+async function ensurePhysics() {
+  if (physics.ready || physics.loading) return;
+  physics.loading = true;
+  try {
+    const mod = await import('https://esm.sh/@dimforge/rapier3d-compat@0.14.0');
+    physics.RAPIER = mod.default ?? mod;
+    await physics.RAPIER.init();
+    physics.ready = true;
+    physics.loading = false;
+    post({ type: 'physicsState', ready: true, running: false });
+  } catch (err) {
+    physics.loading = false;
+    post({ type: 'runtimeError', message: `physics init: ${err.message || err}` });
+  }
+}
+
+function colliderHalfExtents(node) {
+  const g = node.geometry || { type: 'box' };
+  const s = node.transform.scale;
+  switch (g.type) {
+    case 'sphere': return { radius: (g.radius ?? 0.5) * Math.max(s.x, s.y, s.z) };
+    case 'box': return { hx: (g.width ?? 1) * s.x / 2, hy: (g.height ?? 1) * s.y / 2, hz: (g.depth ?? 1) * s.z / 2 };
+    case 'cylinder': case 'cone': return { radius: (g.radius ?? g.radiusTop ?? 0.5) * Math.max(s.x, s.z), hy: (g.height ?? 1) * s.y / 2 };
+    default: return { hx: 0.5 * s.x, hy: 0.5 * s.y, hz: 0.5 * s.z };
+  }
+}
+
+function buildPhysicsWorld() {
+  const R = physics.RAPIER;
+  if (!R || !document_) return;
+  if (physics.world) physics.world.free();
+  physics.bodies.clear();
+  physics.colliderNode.clear();
+  physics.world = new R.World({ x: 0, y: -9.81, z: 0 });
+  physics.eventQueue = new R.EventQueue(true);
+
+  // Ground plane
+  if (document_.world?.ground?.enabled) {
+    const gb = physics.world.createRigidBody(R.RigidBodyDesc.fixed());
+    const half = (document_.world.ground.size || 40) / 2;
+    const col = physics.world.createCollider(R.ColliderDesc.cuboid(half, 0.05, half).setTranslation(0, -0.05, 0), gb);
+    physics.colliderNode.set(col.handle, '__ground__');
+  }
+
+  for (const node of document_.nodes || []) {
+    const pc = node.physics;
+    if (!pc || !pc.enabled) continue;
+    const obj = objectById.get(node.id);
+    if (!obj) continue;
+    const desc = pc.bodyType === 'fixed' ? R.RigidBodyDesc.fixed()
+      : pc.bodyType === 'kinematic' ? R.RigidBodyDesc.kinematicPositionBased()
+      : R.RigidBodyDesc.dynamic();
+    desc.setTranslation(obj.position.x, obj.position.y, obj.position.z)
+        .setRotation({ x: obj.quaternion.x, y: obj.quaternion.y, z: obj.quaternion.z, w: obj.quaternion.w })
+        .setGravityScale(pc.gravityScale)
+        .setLinearDamping(pc.linearDamping)
+        .setAngularDamping(pc.angularDamping);
+    const body = physics.world.createRigidBody(desc);
+    const he = colliderHalfExtents(node);
+    let cdesc;
+    switch (pc.collider) {
+      case 'sphere': cdesc = R.ColliderDesc.ball(he.radius ?? 0.5); break;
+      case 'capsule': cdesc = R.ColliderDesc.capsule(he.hy ?? 0.5, he.radius ?? 0.5); break;
+      default: cdesc = R.ColliderDesc.cuboid(he.hx ?? 0.5, he.hy ?? he.radius ?? 0.5, he.hz ?? 0.5);
+    }
+    cdesc.setMass(pc.mass).setFriction(pc.friction).setRestitution(pc.restitution);
+    const col = physics.world.createCollider(cdesc, body);
+    physics.bodies.set(node.id, body);
+    physics.colliderNode.set(col.handle, node.id);
+    obj.userData.applyImpulse = (imp) => body.applyImpulse({ x: imp.x || 0, y: imp.y || 0, z: imp.z || 0 }, true);
+  }
+}
+
+function physicsStepWorld(dt) {
+  if (!physics.world) return;
+  physics.world.timestep = dt;
+  physics.world.step(physics.eventQueue);
+  for (const [nodeId, body] of physics.bodies) {
+    if (body.isFixed()) continue;
+    const obj = objectById.get(nodeId);
+    if (!obj) continue;
+    const t = body.translation();
+    const rq = body.rotation();
+    obj.position.set(t.x, t.y, t.z);
+    obj.quaternion.set(rq.x, rq.y, rq.z, rq.w);
+  }
+  if (physics.eventQueue) {
+    physics.eventQueue.drainCollisionEvents((h1, h2, started) => {
+      if (!started) return;
+      const n1 = physics.colliderNode.get(h1);
+      const n2 = physics.colliderNode.get(h2);
+      if (n1 && n1 !== '__ground__') fireInteractions(n1, 'collision', { other: n2 });
+      if (n2 && n2 !== '__ground__') fireInteractions(n2, 'collision', { other: n1 });
+    });
+  }
+  if (physics.bake) {
+    const b = physics.bake;
+    b.t += dt;
+    b.acc += dt;
+    if (b.acc >= 1 / b.fps) {
+      b.acc = 0;
+      for (const [nodeId, body] of physics.bodies) {
+        if (body.isFixed()) continue;
+        const obj = objectById.get(nodeId);
+        if (!obj) continue;
+        if (!b.frames.has(nodeId)) b.frames.set(nodeId, []);
+        b.frames.get(nodeId).push({
+          time: +(b.t.toFixed(3)),
+          position: { x: obj.position.x, y: obj.position.y, z: obj.position.z },
+          rotation: { x: obj.rotation.x, y: obj.rotation.y, z: obj.rotation.z },
+        });
+      }
+    }
+    if (b.t >= b.duration) {
+      const frames = {};
+      for (const [nodeId, keys] of b.frames) frames[nodeId] = keys;
+      post({ type: 'physicsBaked', frames });
+      physics.bake = null;
+      physics.running = false;
+      post({ type: 'physicsState', ready: true, running: false });
+    }
+  }
+}
+
+/* ============================ playback ============================ */
+
+const playback = { playing: false, time: 0, nodeId: null, clipId: null };
+let clock = new THREE.Clock();
+let lastTickSent = -1;
+
+const EASING = {
+  linear: t => t,
+  easeIn: t => t * t,
+  easeOut: t => 1 - (1 - t) * (1 - t),
+  easeInOut: t => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2),
+};
+
+/** Resolve the clip to play: explicit (nodeId, clipId) or the first animated node's first clip. */
+function activeClip() {
+  if (!document_) return null;
+  if (playback.nodeId) {
+    const node = document_.nodes.find(n => n.id === playback.nodeId);
+    const clip = node?.animations?.find(c => c.id === playback.clipId) || node?.animations?.[0];
+    if (node && clip) return { node, clip };
+  }
+  for (const node of document_.nodes || []) {
+    if (node.animations && node.animations.length) return { node, clip: node.animations[0] };
+  }
+  return null;
+}
+
+function sampleTrack(track, time) {
+  const keys = [...track.keyframes].sort((a, b) => a.time - b.time);
+  if (!keys.length) return undefined;
+  if (time <= keys[0].time) return keys[0].value;
+  if (time >= keys[keys.length - 1].time) return keys[keys.length - 1].value;
+  for (let i = 0; i < keys.length - 1; i++) {
+    const a = keys[i], b = keys[i + 1];
+    if (time >= a.time && time <= b.time) {
+      const span = b.time - a.time || 1;
+      const t = EASING[a.easing || 'linear']((time - a.time) / span);
+      if (typeof a.value === 'number' && typeof b.value === 'number') return a.value + (b.value - a.value) * t;
+      if (typeof a.value === 'object' && typeof b.value === 'object') {
+        return { x: a.value.x + (b.value.x - a.value.x) * t, y: a.value.y + (b.value.y - a.value.y) * t, z: a.value.z + (b.value.z - a.value.z) * t };
+      }
+      return t < 1 ? a.value : b.value; // strings step
+    }
+  }
+  return keys[keys.length - 1].value;
+}
+
+function applyTrackValue(node, obj, path, value) {
+  if (value === undefined) return;
+  switch (path) {
+    case 'transform.position': obj.position.set(value.x, value.y, value.z); break;
+    case 'transform.rotation': obj.rotation.set(value.x, value.y, value.z); break;
+    case 'transform.scale': obj.scale.set(value.x, value.y, value.z); break;
+    case 'visible': obj.visible = value === 'true' || value === true; break;
+    case 'material.opacity': {
+      const applyOpacity = (m) => { m.transparent = true; m.opacity = Number(value); m.needsUpdate = true; };
+      obj.traverse(o => { if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(applyOpacity); });
+      break;
+    }
+    default: break;
+  }
+}
+
+function samplePlayback(time) {
+  const ac = activeClip();
+  if (!ac) return;
+  const obj = objectById.get(ac.node.id);
+  if (!obj) return;
+  for (const track of ac.clip.tracks) {
+    applyTrackValue(ac.node, obj, track.path, sampleTrack(track, time));
+  }
+  // Camera nodes: drive the render camera when this is the active camera.
+  if (ac.node.kind === 'camera' && document_.activeCameraId === ac.node.id) {
+    camera.position.copy(obj.position);
+    camera.rotation.copy(obj.rotation);
+  }
+}
+
+function clipDuration() {
+  return activeClip()?.clip.duration || 0;
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  tickTimerInteractions(dt);
+  if (playback.playing) {
+    const dur = clipDuration();
+    playback.time += dt;
+    const loop = activeClip()?.clip.loop || 'once';
+    if (dur > 0 && playback.time > dur) {
+      if (loop === 'repeat') playback.time %= dur;
+      else if (loop === 'pingpong') playback.time = dur - (playback.time % dur); // simplified bounce
+      else { playback.time = dur; playback.playing = false; }
+    }
+    samplePlayback(playback.time);
+    if (Math.abs(playback.time - lastTickSent) > 0.05 || !playback.playing) {
+      lastTickSent = playback.time;
+      post({ type: 'playback', time: playback.time, playing: playback.playing, duration: dur });
+    }
+  }
+  controls.update();
+  for (const [, helper] of selectionHelpers) helper.update();
+  renderViewports();
+}
+
+/* ========================== command intake ========================== */
+
+let transformMode = null;
+
+window.addEventListener('message', async (e) => {
+  const msg = e.data;
+  if (!msg || msg.source !== 'omneon-host') return;
+  try {
+    switch (msg.type) {
+      case 'loadScene': {
+        document_ = msg.document;
+        rebuildScene(document_);
+        if (document_.world?.cameraDefault) {
+          const cd = document_.world.cameraDefault;
+          camera.position.set(cd.position.x, cd.position.y, cd.position.z);
+          controls.target.set(cd.target.x, cd.target.y, cd.target.z);
+          controls.update();
+        }
+        break;
+      }
+      case 'applyOperations': {
+        document_ = msg.document;
+        applyOperationsIncremental(msg.operations, document_);
+        break;
+      }
+      case 'selectNode': {
+        selection = msg.ids || [];
+        updateSelectionHelpers();
+        break;
+      }
+      case 'setCamera': {
+        camera.position.set(msg.position.x, msg.position.y, msg.position.z);
+        if (msg.target) controls.target.set(msg.target.x, msg.target.y, msg.target.z);
+        controls.update();
+        break;
+      }
+      case 'setTransformMode': {
+        transformMode = msg.mode;
+        if (msg.mode) transformControls.setMode(msg.mode);
+        updateSelectionHelpers();
+        break;
+      }
+      case 'setSpace': {
+        transformControls.setSpace(msg.space);
+        break;
+      }
+      case 'setSelectionMode': {
+        selectionMode = msg.mode;
+        controls.enabled = msg.mode === 'point';
+        break;
+      }
+      case 'setSnap': {
+        transformControls.setTranslationSnap(msg.enabled ? msg.translateSnap : null);
+        transformControls.setRotationSnap(msg.enabled ? msg.rotateSnap : null);
+        transformControls.setScaleSnap(msg.enabled ? msg.scaleSnap : null);
+        break;
+      }
+      case 'play':
+        playback.nodeId = msg.nodeId ?? null;
+        playback.clipId = msg.clipId ?? null;
+        playback.playing = true;
+        post({ type: 'playback', time: playback.time, playing: true, duration: clipDuration() });
+        break;
+      case 'pause':
+        playback.playing = false;
+        post({ type: 'playback', time: playback.time, playing: false, duration: clipDuration() });
+        break;
+      case 'physicsStart':
+        await ensurePhysics();
+        if (physics.ready) {
+          if (!physics.world) buildPhysicsWorld();
+          physics.running = true;
+          post({ type: 'physicsState', ready: true, running: true });
+        }
+        break;
+      case 'physicsPause':
+        physics.running = false;
+        post({ type: 'physicsState', ready: physics.ready, running: false });
+        break;
+      case 'physicsStep':
+        await ensurePhysics();
+        if (physics.ready) {
+          if (!physics.world) buildPhysicsWorld();
+          physicsStepWorld(1 / 60);
+        }
+        break;
+      case 'physicsReset':
+        physics.running = false;
+        buildPhysicsWorld();
+        // Restore pristine transforms from the document.
+        if (document_) {
+          for (const node of document_.nodes || []) {
+            const obj = objectById.get(node.id);
+            if (obj) applyTransform(obj, node.transform);
+          }
+        }
+        post({ type: 'physicsState', ready: physics.ready, running: false });
+        break;
+      case 'physicsBake':
+        await ensurePhysics();
+        if (physics.ready) {
+          buildPhysicsWorld();
+          physics.bake = { frames: new Map(), fps: msg.fps || 30, t: 0, acc: 0, duration: msg.duration || 3 };
+          physics.running = true;
+          post({ type: 'physicsState', ready: true, running: true });
+        }
+        break;
+      case 'seek':
+        playback.time = Math.max(0, msg.time || 0);
+        samplePlayback(playback.time);
+        post({ type: 'playback', time: playback.time, playing: playback.playing, duration: clipDuration() });
+        break;
+      default: break;
+    }
+  } catch (err) {
+    post({ type: 'runtimeError', message: String(err.message || err), stack: err.stack });
+    showError(String(err.message || err));
+  }
+});
+
+resize();
+animate();
+// Exported builds (step 15) embed the scene directly and run standalone.
+if (window.__SCENE__) {
+  try {
+    document_ = window.__SCENE__;
+    rebuildScene(document_);
+  } catch (err) {
+    showError(`scene load: ${err.message || err}`);
+  }
+}
+post({ type: 'runtimeReady' });
+</script>
+</body>
+</html>

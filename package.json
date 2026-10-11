@@ -1,0 +1,50 @@
+{
+  "name": "builder-brock",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:server\"",
+    "dev:frontend": "vite",
+    "dev:server": "tsx watch server/index.ts",
+    "build": "vite build",
+    "preview": "vite preview",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "db:studio": "prisma studio",
+    "db:reset": "prisma db push --force-reset",
+    "setup": "prisma generate && prisma db push"
+  },
+  "dependencies": {
+    "@google/genai": "^0.7.0",
+    "@huggingface/transformers": "^4.3.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@prisma/client": "^6.19.2",
+    "@types/three": "^0.186.0",
+    "concurrently": "^9.2.1",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "fflate": "^0.8.3",
+    "gifenc": "^1.0.3",
+    "gsap": "^3.14.2",
+    "prisma": "^6.19.2",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "three": "^0.186.0",
+    "tsx": "^4.21.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.14.0",
+    "@types/react-test-renderer": "^19.1.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
+    "react-test-renderer": "19.2.4",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
+}

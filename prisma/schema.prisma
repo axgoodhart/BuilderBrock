@@ -1,0 +1,173 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Project {
+  id          String     @id @default(cuid())
+  name        String
+  prompt      String?
+  mode        String     @default("flash") // flash | pro | Voyeur
+  creationMode String    @default("web") // web | mockup | omneon | sprites
+  settings    String?    // JSON: model, temperature, calibration data
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  lastActiveAt DateTime  @default(now())
+  status      String     @default("active") // active | archived | deleted
+
+  artifacts   Artifact[]
+
+  @@index([lastActiveAt])
+  @@index([status])
+}
+
+model Artifact {
+  id            String     @id @default(cuid())
+  projectId     String
+  html          String
+  kind          String     @default("web") // web | scene | sprites
+  model         String     // model used to generate
+  temperature   Float      @default(0.0)
+  variantIndex  Int        @default(0)
+  variantLabel  String?    // "Default Variant", "Creative Interpretation", etc.
+  status        String     @default("complete") // streaming | complete | error | discarded
+  errorMessage  String?
+  prompt        String?    // the prompt that generated this
+  imageRef      String?    // base64 or path to reference image
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  project       Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  revisions     Revision[]
+  sceneBranches    SceneBranch[]
+  sceneRevisions   SceneRevision[]
+  conversations    Conversation[]
+
+  @@index([projectId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Revision {
+  id          String   @id @default(cuid())
+  artifactId  String
+  html        String   // the full HTML after this revision
+  prompt      String   // what the user asked to change
+  model       String?  // requested model for an AI refinement; null for manual revisions
+  selection   String?  // JSON: selection overlay coordinates + extracted elements
+  diff        String?  // optional: what changed
+  createdAt   DateTime @default(now())
+
+  artifact    Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+
+  @@index([artifactId])
+  @@index([createdAt])
+}
+
+/* ------------------------------------------------------------------ */
+/* Omneon conversational scene history                                 */
+/*                                                                     */
+/* Application-level Git semantics in SQLite: message undo, automatic  */
+/* forks, thumbnails and branch comparison — without materializing     */
+/* scenes on disk. Real Git keeps protecting BuilderBrock's source.    */
+/* ------------------------------------------------------------------ */
+
+model SceneBranch {
+  id         String   @id @default(cuid())
+  artifactId String
+  name       String
+  /** Revision this branch forked from; null for the root branch. */
+  parentRevisionId String?
+  createdAt  DateTime @default(now())
+
+  artifact   Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  revisions  SceneRevision[]
+  conversations Conversation[]
+
+  @@index([artifactId])
+}
+
+model SceneRevision {
+  id         String   @id @default(cuid())
+  artifactId String
+  branchId   String
+  /** Full SceneDocument snapshot. For a private local app, reliable full
+      snapshots beat prematurely clever deltas. */
+  document   String
+  /** What produced this revision. */
+  source     String   @default("manual") // chat | manual | gizmo | timeline | template | import
+  prompt     String?
+  /** JSON: operations applied to the parent document (when known). */
+  operations String?
+  /** JSON: selected node ids / world-space region at commit time. */
+  selection  String?
+  model      String?
+  createdAt  DateTime @default(now())
+
+  artifact   Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  branch     SceneBranch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@index([artifactId])
+  @@index([branchId])
+  @@index([createdAt])
+}
+
+model Conversation {
+  id         String   @id @default(cuid())
+  artifactId String
+  branchId   String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  artifact   Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  branch     SceneBranch? @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  messages   Message[]
+
+  @@index([artifactId])
+}
+
+model Message {
+  id             String   @id @default(cuid())
+  conversationId String
+  role           String   // user | assistant
+  text           String
+  /** Assistant proposals carry Zod-validated SceneOperation[] JSON here. */
+  operations     String?
+  explanation    String?
+  /** Before/after revisions when the proposal was applied. */
+  beforeRevisionId String?
+  afterRevisionId  String?
+  /** pending | applied | discarded | failed */
+  status         String   @default("pending")
+  model          String?
+  createdAt      DateTime @default(now())
+
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([createdAt])
+}
+
+/* Omneon asset library: metadata in SQLite, binaries on disk in the local
+   data directory. Assets are copied in on import — history and packaging
+   never depend on a remote source. */
+model Asset {
+  id          String   @id @default(cuid())
+  name        String
+  kind        String   // model | texture | hdr | audio | script | other
+  origin      String   // local | mcp
+  originUri   String?  // original MCP resource uri or source path
+  hash        String?
+  path        String   // file path inside the local assets directory
+  sizeBytes   Int      @default(0)
+  thumbnail   String?  // data-url for image thumbnails
+  metadata    String?  // JSON: attribution, license, extra fields
+  createdAt   DateTime @default(now())
+
+  @@index([kind])
+  @@index([createdAt])
+}

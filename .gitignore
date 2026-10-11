@@ -1,0 +1,16 @@
+# Local credentials and machine-specific configuration
+.env
+.env.*
+!.env.example
+
+# Installed dependencies
+node_modules/
+
+# Local runtime database
+data/*.db
+data/*.db-*
+prisma/data/
+
+# Local logs and OS metadata
+*.log
+.DS_Store
