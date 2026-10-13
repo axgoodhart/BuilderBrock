@@ -72,4 +72,32 @@ const r8 = applySceneOperations(r6a.document, [
 ]);
 assert(r8.ok && r8.document.materials[0].props.roughness === 0.5, 'material library update applies');
 
-console.log('\nStep 3 gate: PASS');
+// Inspector patches preserve sibling values and obey object locks.
+const lightPatch = applySceneOperations(r1.document, [{ op: 'node.setLight', id: 'sun', light: { color: '#ffcc88' } }]);
+assert(lightPatch.ok && lightPatch.document.nodes.find(n => n.id === 'sun')!.light!.intensity === 2,
+    'editing light color preserves intensity');
+const lockedLight = applySceneOperations(r1.document, [{ op: 'node.setLocked', id: 'sun', locked: true }]);
+assert(!applySceneOperations(lockedLight.document, [{ op: 'node.setLight', id: 'sun', light: { intensity: 4 } }]).ok,
+    'locked light rejects inspector edits');
+const cameraScene = applySceneOperations(doc0, [{ op: 'node.add', node: { id: 'camera', name: 'Camera', kind: 'camera', camera: { fov: 65, near: 0.5, far: 500 } } }]);
+const cameraPatch = applySceneOperations(cameraScene.document, [{ op: 'node.setCamera', id: 'camera', camera: { fov: 40 } }]);
+assert(cameraPatch.ok && cameraPatch.document.nodes[0].camera!.near === 0.5 && cameraPatch.document.nodes[0].camera!.far === 500,
+    'editing field of view preserves camera clipping planes');
+
+// Moving keys must preserve their values and reject destructive collisions.
+const animated = applySceneOperations(r1.document, [{ op: 'animation.upsertClip', id: 'pillar_left', clip: {
+    id: 'move', name: 'Move', duration: 2, loop: 'once', tracks: [{ path: 'transform.position', keyframes: [
+        { time: 0, value: { x: 0, y: 0, z: 0 }, easing: 'linear' },
+        { time: 1, value: { x: 3, y: 2, z: 1 }, easing: 'easeOut' },
+    ] }],
+} }]);
+const moveKey = { op: 'animation.setKeyTime', id: 'pillar_left', clipId: 'move', path: 'transform.position', fromTime: 1, toTime: 0.5 };
+const moved = applySceneOperations(animated.document, [moveKey]);
+const movedKey = moved.document.nodes[0].animations[0].tracks[0].keyframes[1];
+assert(moved.ok && movedKey.time === 0.5 && movedKey.easing === 'easeOut' && (movedKey.value as any).x === 3,
+    'moving a key preserves its value and easing');
+const collision = applySceneOperations(animated.document, [{ ...moveKey, toTime: 0 }]);
+assert(!collision.ok && collision.document === animated.document, 'moving onto another key leaves the scene unchanged');
+assert(!applySceneOperations(animated.document, [{ ...moveKey, toTime: 3 }]).ok, 'moving past the clip duration is rejected');
+
+console.log('\nScene operations: PASS');

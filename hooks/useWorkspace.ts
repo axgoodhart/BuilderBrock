@@ -906,7 +906,7 @@ export function useWorkspace() {
         }
     }, [projects, selectedProjectId, isUserEditsProject, addToast]);
 
-    const handleUpdateArtifact = useCallback((id: string, newHtml: string) => {
+    const handleUpdateArtifact = useCallback((id: string, newHtml: string, persist = true) => {
         // Update in-memory state
         setProjects(prev => prev.map(p => ({
             ...p,
@@ -915,7 +915,8 @@ export function useWorkspace() {
             )
         })));
 
-        // Persist to DB
+        // Omneon awaits persistence itself so it can display save failures.
+        if (!persist) return;
         api.updateArtifact(id, { html: newHtml })
             .catch(e => console.error('Failed to update artifact:', e));
     }, []);

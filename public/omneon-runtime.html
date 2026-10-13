@@ -352,15 +352,32 @@ function rebuildScene(doc) {
   }
   // Selection helpers refreshed
   updateSelectionHelpers();
+  applyActiveCamera(doc);
   // Physics bodies track structural changes.
   if (physics.ready && physics.world) buildPhysicsWorld();
+}
+
+function applyActiveCamera(doc) {
+  const node = doc.nodes.find(n => n.id === doc.activeCameraId && n.kind === 'camera');
+  const obj = node && objectById.get(node.id);
+  if (!obj) return false;
+  obj.updateWorldMatrix(true, false);
+  obj.getWorldPosition(camera.position);
+  obj.getWorldQuaternion(camera.quaternion);
+  camera.fov = node.camera?.fov || 50;
+  camera.near = node.camera?.near || 0.1;
+  camera.far = node.camera?.far || 1000;
+  camera.updateProjectionMatrix();
+  controls.target.set(0, 0, -1).applyQuaternion(camera.quaternion).add(camera.position);
+  controls.update();
+  return true;
 }
 
 /* ====================== incremental patching ====================== */
 
 const STRUCTURAL_OPS = new Set([
   'node.add', 'node.remove', 'node.reparent', 'node.duplicate',
-  'node.setGeometry', 'material.define', 'material.assign',
+  'node.setGeometry', 'node.setLight', 'node.setCamera', 'material.define', 'material.assign',
   'material.setOverride', 'interaction.connect', 'interaction.disconnect',
   'physics.configure', 'camera.setActive', 'script.set',
 ]);
@@ -916,8 +933,9 @@ window.addEventListener('message', async (e) => {
       case 'loadScene': {
         document_ = msg.document;
         rebuildScene(document_);
-        if (document_.world?.cameraDefault) {
+        if (!applyActiveCamera(document_) && document_.world?.cameraDefault) {
           const cd = document_.world.cameraDefault;
+          camera.fov = cd.fov || 50; camera.updateProjectionMatrix();
           camera.position.set(cd.position.x, cd.position.y, cd.position.z);
           controls.target.set(cd.target.x, cd.target.y, cd.target.z);
           controls.update();
@@ -927,6 +945,8 @@ window.addEventListener('message', async (e) => {
       case 'applyOperations': {
         document_ = msg.document;
         applyOperationsIncremental(msg.operations, document_);
+        if (msg.operations.some(op => op.op.startsWith('animation.'))) samplePlayback(playback.time);
+        if (msg.operations.some(op => ['camera.setActive', 'node.setCamera', 'node.transform'].includes(op.op))) applyActiveCamera(document_);
         break;
       }
       case 'selectNode': {
@@ -1012,6 +1032,8 @@ window.addEventListener('message', async (e) => {
         }
         break;
       case 'seek':
+        if (msg.nodeId !== undefined) playback.nodeId = msg.nodeId;
+        if (msg.clipId !== undefined) playback.clipId = msg.clipId;
         playback.time = Math.max(0, msg.time || 0);
         samplePlayback(playback.time);
         post({ type: 'playback', time: playback.time, playing: playback.playing, duration: clipDuration() });

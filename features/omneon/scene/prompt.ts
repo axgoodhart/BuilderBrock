@@ -23,6 +23,8 @@ export function sceneSystemPrompt(): string {
         '- {"op":"node.setVisible","id","visible"}  /  {"op":"node.setLocked","id","locked"}',
         '- {"op":"node.transform","id","position"?,"rotation"?,"scale"?}  // partial Vec3 patches',
         '- {"op":"node.setGeometry","id","geometry"}',
+        '- {"op":"node.setLight","id","light"} // partial color, intensity, castShadow',
+        '- {"op":"node.setCamera","id","camera"} // partial fov, near, far',
         '- {"op":"material.define","material":{"id"?,"name","props":{color,metalness,roughness,opacity,transparent,emissive,emissiveIntensity,wireframe}}}',
         '- {"op":"material.assign","id","materialId"}  /  {"op":"material.update","materialId","props"}  /  {"op":"material.setOverride","id","props"}',
         '- {"op":"animation.upsertClip","id","clip"} / {"op":"animation.keyframe","id","clipId","path","time","value","easing"} / {"op":"animation.removeClip","id","clipId"}',

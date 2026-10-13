@@ -58,7 +58,7 @@ interface WorkspaceLayoutProps {
 
     // Refinement
     selectedArtifact: Artifact | null;
-    onUpdateArtifact: (id: string, newHtml: string) => void;
+    onUpdateArtifact: (id: string, newHtml: string, persist?: boolean) => void;
     onPatchArtifact: (id: string, patch: Record<string, any>) => void;
     onCreateSprites: (name?: string) => void;
 

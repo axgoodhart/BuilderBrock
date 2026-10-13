@@ -9,6 +9,7 @@ import {
     ChevronDownIcon,
 } from './Icons';
 import { TEMPLATES, buildTemplateDocument } from '../features/omneon/templates';
+import TemplatePicker from '../features/omneon/TemplatePicker';
 
 interface FileTreeProps {
     projects: any[];
@@ -177,20 +178,15 @@ const FileTree: React.FC<FileTreeProps> = ({
                                 <div className="launchpad-card-name">Mockup</div>
                                 <div className="launchpad-card-desc">Sketch a layout on the canvas and generate a design from it.</div>
                             </button>
-                            <div className="launchpad-card launchpad-card-omneon">
+                            <div className="launchpad-card launchpad-card-omneon launchpad-scene-card">
                                 <div className="launchpad-card-name">Omneon Scene</div>
                                 <div className="launchpad-card-desc">Create an editable 3D scene with chat, handles, timeline and physics.</div>
-                                <select
-                                    className="launchpad-select"
-                                    value={omneonTemplate}
-                                    onChange={e => setOmneonTemplate(e.target.value)}
-                                >
-                                    {TEMPLATES.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                                </select>
+                                <TemplatePicker value={omneonTemplate} onChange={setOmneonTemplate} />
                                 <div className="launchpad-omneon-row">
                                     <input
                                         className="launchpad-input"
                                         placeholder="Scene name"
+                                        aria-label="Scene name"
                                         value={omneonName}
                                         onChange={e => setOmneonName(e.target.value)}
                                         onKeyDown={e => { if (e.key === 'Enter') handlePickOmneon(); }}

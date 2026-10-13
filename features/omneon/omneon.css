@@ -79,7 +79,7 @@ button, .btn {
 }
 
 .omneon-inspector {
-    width: 240px; flex-shrink: 0; border-left: 1px solid rgba(255,255,255,0.08);
+    width: var(--inspector-width, 300px); box-sizing: border-box; flex-shrink: 0; border-left: 1px solid rgba(255,255,255,0.08);
     background: #10121a; padding: 12px; overflow-y: auto;
 }
 .omneon-inspector-title { font-size: 0.75rem; font-weight: 600; color: #aab2c5; margin-bottom: 10px; }
@@ -115,6 +115,7 @@ button, .btn {
     padding: 20px;
     width: 520px;
     max-width: 92vw;
+    max-height: 90dvh; overflow-y: auto; box-sizing: border-box;
 }
 
 .launchpad-title {
@@ -226,7 +227,7 @@ button, .btn {
 }
 
 .omneon-chat {
-    height: 220px; flex-shrink: 0; display: flex; flex-direction: column;
+    height: var(--chat-height, 220px); max-height: 34%; min-height: 100px; flex-shrink: 1; display: flex; flex-direction: column;
     border-top: 1px solid rgba(255,255,255,0.08); background: #10121a;
 }
 .omneon-chat-messages { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
@@ -271,8 +272,8 @@ button, .btn {
 .omneon-content-row { flex: 1; display: flex; min-height: 0; }
 
 .omneon-tree-rail {
-    width: 100px; flex-shrink: 0; border-right: 1px solid rgba(255,255,255,0.08);resize:horizontal;
-    background: #0e1016; display: flex; min-height: 0;
+    width: var(--tree-width, 220px); flex-shrink: 0; border-right: 1px solid rgba(255,255,255,0.08);
+    background: #0e1016; display: flex; flex-direction: column; min-height: 0;
 }
 
 .omneon-tree { flex: 1; display: flex; flex-direction: column; min-height: 0; }
@@ -280,7 +281,7 @@ button, .btn {
     margin: 8px; padding: 6px 8px; background: rgba(0,0,0,0.3);
     margin-left:3px;
  border:none;border-radius: 6px;
-    color: #e8ebf4; font-size: 0.72rem;width:90px;
+    color: #e8ebf4; font-size: 0.75rem; min-width: 0; width: auto;
 }
 .omneon-tree-search:active, .omneon-tree-search:focus { outline: none; background:black;box-shadow:inset 0 0 8px rgb(111, 3, 86)}
 .omneon-tree-list { flex: 1; overflow-y: auto; padding-bottom: 8px; }
@@ -298,7 +299,7 @@ button, .btn {
     flex: 1; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.2);
     border-radius: 4px; color: #e8ebf4; font-size: 0.72rem; padding: 2px 4px;
 }
-.omneon-tree-actions { display: none; gap: 2px; }
+.omneon-tree-actions { display: flex; flex-shrink: 0; gap: 2px; }
 .omneon-tree-row:hover .omneon-tree-actions { display: flex; }
 .omneon-tree-actions button {
     background: none; border: none; cursor: pointer; font-size: 0.66rem;
@@ -403,7 +404,7 @@ button, .btn {
 /* ------------------------- timeline (step 11) ------------------------- */
 .omneon-timeline {
     border-top: 1px solid #23262f; background: #101218; padding: 6px 10px;
-    display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow-y: auto; flex: 1;
 }
 .omneon-timeline-empty { color: #6b7080; font-size: 12px; padding: 8px 4px; }
 .omneon-timeline-transport { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -511,3 +512,170 @@ button, .btn {
 }
 .omneon-compare button:disabled { opacity: 0.45; cursor: default; }
 .omneon-checkout-banner .omneon-compare-left { color: #f0c674; font-weight: 600; }
+
+/* Flexible workbench: content owns the space; panels retain their chosen sizes. */
+.omneon-workspace {
+    position: relative; min-width: 0; container-type: inline-size;
+    color: #e8ebf4; color-scheme: dark; font-family: system-ui, sans-serif;
+    --omneon-line: #323645; --omneon-muted: #adb5c8; --omneon-accent: #9bbcff;
+}
+.omneon-workspace *, .omneon-collection-dialog *, .omneon-template-picker * { box-sizing: border-box; }
+.omneon-workspace [hidden] { display: none !important; }
+.omneon-workspace button, .omneon-workspace input, .omneon-workspace select,
+.omneon-collection-dialog button, .omneon-collection-dialog select, .omneon-template-picker button {
+    font-family: system-ui, sans-serif; -webkit-text-stroke: 0;
+}
+.omneon-workspace button, .omneon-collection-dialog button, .omneon-template-picker button {
+    min-height: 28px; font-size: 0.75rem; line-height: 1.3;
+    color: #e8ebf4; background: #1c202c; border: 1px solid var(--omneon-line, #323645); border-radius: 5px; padding: 5px 8px; cursor: pointer;
+}
+.omneon-workspace button:hover:not(:disabled), .omneon-collection-dialog button:hover:not(:disabled), .omneon-template-picker button:hover { background: #2b3245; }
+.omneon-workspace button:disabled, .omneon-collection-dialog button:disabled { opacity: .45; cursor: not-allowed; }
+.omneon-workspace :focus-visible, .omneon-collection-dialog :focus-visible, .omneon-template-picker :focus-visible { outline: 2px solid #b7a4ff; outline-offset: 2px; }
+.omneon-workspace ::selection, .omneon-collection-dialog ::selection { background: #4c426f; color: #fff; }
+.omneon-workspace input, .omneon-workspace select { accent-color: #a7bfff; caret-color: #b7a4ff; }
+.omneon-workspace .omneon-active, .omneon-collection-dialog .omneon-active, .omneon-template-picker .omneon-active { color: #f6f4ff; border-color: #8c83b3; background: #3c3456; }
+.omneon-workspace .omneon-primary, .omneon-collection-dialog .omneon-primary { background: #465e9b; border-color: #839bd3; color: white; }
+.omneon-main { min-height: 0; }
+.omneon-toolbar { flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
+.omneon-toolbar-title { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'Poiret One', system-ui, sans-serif; font-size: 1rem; }
+.omneon-toolbar-actions { flex-wrap: wrap; align-items: center; gap: 4px; }
+.omneon-toolbar-hint { color: var(--omneon-muted); margin-left: auto; }
+.omneon-branch-select { max-width: 140px; }
+.omneon-toolbar-overflow { position: relative; }
+.omneon-toolbar-overflow > summary { list-style: none; cursor: pointer; font-size: .75rem; padding: 6px 10px; min-height: 28px; border: 1px solid var(--omneon-line); border-radius: 5px; }
+.omneon-toolbar-overflow > summary::-webkit-details-marker { display: none; }
+.omneon-toolbar-overflow[open] > summary { background: #3c3456; }
+.omneon-overflow-content { position: absolute; right: 0; top: calc(100% + 6px); width: 248px; max-height: min(65dvh, 540px); overflow-y: auto; padding: 12px; background: #171a24; border: 1px solid #495065; border-radius: 8px; z-index: 30; display: flex; flex-direction: column; gap: 5px; }
+.omneon-overflow-content h4 { margin: 12px 0 3px; font-size: .72rem; color: var(--omneon-muted); }
+.omneon-overflow-content h4:first-child { margin-top: 0; }
+.omneon-overflow-content button { text-align: left; }
+.omneon-panel-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 6px 10px; background: #14131d; border-bottom: 1px solid #2a2639; flex-shrink: 0; }
+.omneon-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; min-height: 36px; font-size: .75rem; flex-shrink: 0; }
+.omneon-panel-heading h3 { font-size: .95rem; margin: 0; }
+.omneon-panel-heading button { background: transparent; border-color: transparent; color: #c0b6db; }
+.omneon-content-row { min-height: 150px; }
+.omneon-viewport-wrap { min-width: 0; }
+.omneon-resizer { position: relative; flex-shrink: 0; background: #171922; touch-action: none; z-index: 8; }
+.omneon-resizer.vertical { width: 6px; cursor: col-resize; }
+.omneon-resizer.horizontal { height: 6px; cursor: row-resize; }
+.omneon-resizer::after { content: ''; position: absolute; inset: 0; }
+.omneon-resizer.vertical::after { inset: 0 -3px; }
+.omneon-resizer.horizontal::after { inset: -3px 0; }
+.omneon-resizer:hover, .omneon-resizer:focus-visible { background: #817398; }
+.omneon-workspace.is-resizing { user-select: none; }
+.omneon-workspace.is-resizing iframe { pointer-events: none; }
+.omneon-timeline-panel { display: flex; flex-direction: column; height: var(--timeline-height, 230px); max-height: 35%; min-height: 100px; flex-shrink: 1; background: #101218; overflow: hidden; }
+.omneon-chat-messages { min-height: 0; }
+.omneon-chat-input { flex-shrink: 0; }
+.omneon-chat-input input { min-width: 0; }
+.omneon-msg { max-width: 100%; overflow-wrap: anywhere; }
+.omneon-msg-user { max-width: 85%; }
+.omneon-msg-assistant { width: 100%; }
+.omneon-msg-text { max-width: 75ch; }
+.omneon-statusbar { display: flex; gap: 6px 16px; flex-wrap: wrap; align-items: center; flex-shrink: 0; padding: 6px 10px; background: #0e1016; border-top: 1px solid #292c38; font-size: .7rem; color: #bac3d8; }
+.omneon-statusbar span { overflow-wrap: anywhere; }
+.omneon-inspector > .omneon-panel-heading { padding: 0 0 8px; }
+.omneon-inspector-tabs { flex-wrap: wrap; }
+.omneon-inspector-tabs button { flex-basis: 28%; }
+.omneon-inspector-card { padding: 12px 0; background: none; border: 0; border-radius: 0; border-bottom: 1px solid #303442; }
+.omneon-inspector-id { overflow-wrap: anywhere; margin: 4px 0 12px; color: #a6afc5; }
+.omneon-inspector-empty { color: #adb5c8; padding: 12px; line-height: 1.5; }
+.omneon-property-section { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 10px; font-size: .75rem; }
+.omneon-property-section h4 { margin: 12px 0 0; font-size: .75rem; }
+.omneon-property-section:disabled { opacity: .65; }
+.omneon-property-field { min-width: 0; display: flex; flex-direction: column; align-items: stretch; gap: 4px; font-size: .72rem; color: #bbc3d5; }
+.omneon-property-field input, .omneon-property-field select, .omneon-key-editor select { width: 100%; min-width: 0; min-height: 30px; padding: 5px 6px; border: 1px solid #3c4253; border-radius: 4px; background: #0c0e15; color: #f0f2f9; font-size: .75rem; font-variant-numeric: tabular-nums; }
+.omneon-property-field input[aria-invalid="true"] { border-color: #ec99a5; }
+.omneon-property-field small, .omneon-field-error { color: #ffb3bd; font-size: .72rem; }
+.omneon-vector-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 6px; }
+.omneon-vector-fields .omneon-property-field span { text-transform: capitalize; }
+.omneon-geometry-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.omneon-property-toggles { display: flex; gap: 14px; margin: 10px 0; font-size: .75rem; }
+.omneon-help { font-size: .75rem; line-height: 1.5; color: #adb5c8; margin: 6px 0; }
+.omneon-tree-search { margin: 4px 8px 8px; border: 1px solid #323645; }
+.omneon-tree-group-actions { display: flex; gap: 4px; padding: 0 8px 8px; }
+.omneon-tree-group-actions button { font-size: .65rem; flex: 1; }
+.omneon-tree-row { gap: 3px; min-height: 36px; }
+.omneon-tree-row.hidden-node { opacity: 1; }
+.omneon-tree-row.hidden-node .omneon-tree-name { color: #a6adbf; text-decoration: line-through; }
+.omneon-tree-row.locked { opacity: 1; }
+.omneon-tree-actions button, .omneon-tree-expand { padding: 3px; min-height: 28px; width: 24px; border: 0; background: transparent; }
+.omneon-tree-actions svg, .omneon-tree-expand svg { display: block; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.omneon-tree-actions button[aria-pressed="true"] { color: #c9d7ff; }
+.omneon-tree-expand-spacer { width: 24px; flex-shrink: 0; }
+.omneon-tree-expand { flex-shrink: 0; }
+.omneon-tree-name { min-width: 24px; }
+.omneon-preview { position: relative; margin: 0; height: 200px; border: 1px solid #353b4c; border-radius: 6px; overflow: hidden; background: #0b0d12; }
+.omneon-preview iframe { width: 100%; height: 100%; border: 0; display: block; pointer-events: none; }
+.omneon-preview figcaption { position: absolute; top: 8px; left: 8px; padding: 4px 7px; border-radius: 3px; color: #eff3ff; background: #161924; font: 12px system-ui, sans-serif; }
+.omneon-preview-state { position: absolute; inset: 0; padding: 20px; background: #131722; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; font: 12px/1.5 system-ui, sans-serif; color: #d5dcec; }
+.launchpad-scene-card { grid-column: 1 / -1; cursor: default; }
+.omneon-template-picker { display: flex; flex-direction: column; gap: 10px; font: .75rem/1.5 system-ui, sans-serif; color: #d0d6e5; margin-top: 14px; }
+.omneon-template-picker p { margin: 0; }
+.omneon-template-options, .omneon-collection-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.omneon-template-includes { display: flex; flex-direction: column; gap: 4px; }
+.omneon-template-includes strong { color: #f0f3fa; }
+.omneon-collection-dialog { width: 540px; max-width: calc(100vw - 24px); max-height: 90dvh; overflow-y: auto; background: #141720; color: #e8ebf4; border: 1px solid #4a5062; border-radius: 10px; padding: 18px; font: .8rem/1.5 system-ui, sans-serif; color-scheme: dark; }
+.omneon-collection-dialog::backdrop { background: rgb(0 0 0 / .65); }
+.omneon-collection-dialog .omneon-panel-heading { padding: 0 0 16px; }
+.omneon-collection-options { margin-bottom: 12px; }
+.omneon-collection-dialog .omneon-preview { height: 240px; }
+.omneon-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.omneon-proposal-review { margin-top: 12px; white-space: normal; }
+.omneon-proposal-summary { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-bottom: 10px; font-size: .72rem; color: #c7b8ed; }
+.omneon-proposal-previews { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 10px 0; }
+.omneon-proposal-diff { max-height: 230px; overflow: auto; font-size: .72rem; }
+.omneon-proposal-diff summary { cursor: pointer; padding: 7px 0; }
+.omneon-diff-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; border-top: 1px solid #333948; padding: 8px 0; }
+.omneon-diff-row strong { grid-column: 1 / -1; }
+.omneon-diff-row del, .omneon-diff-row ins { white-space: pre-wrap; overflow-wrap: anywhere; text-decoration: none; color: #f1b5bd; }
+.omneon-diff-row ins { color: #afddc4; }
+.omneon-timeline-transport .omneon-property-field { flex-direction: row; align-items: center; }
+.omneon-timeline-transport .omneon-property-field input { width: 76px; }
+.omneon-timeline-options { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; font-size: .75rem; }
+.omneon-timeline-options .omneon-property-field { max-width: 160px; }
+.omneon-timeline-lanes { overflow-x: auto; padding: 4px 14px 8px 0; flex-shrink: 0; }
+.omneon-timeline-lanes .omneon-timeline-track { min-width: 420px; }
+.omneon-timeline-track-name { width: 90px; color: #b4bdd0; overflow: hidden; text-overflow: ellipsis; }
+.omneon-time-ruler { position: relative; height: 32px; flex: 1; cursor: crosshair; border-bottom: 1px solid #69758f; margin-bottom: 4px; }
+.omneon-time-ruler span { position: absolute; bottom: 6px; transform: translateX(-50%); font-size: .65rem; color: #c2cbe0; font-variant-numeric: tabular-nums; }
+.omneon-time-ruler span::after { content: ''; height: 5px; width: 1px; background: #8592ad; position: absolute; left: 50%; bottom: -6px; }
+.omneon-time-ruler span:first-child { transform: none; }
+.omneon-time-ruler span:last-child { transform: translateX(-100%); }
+.omneon-timeline-keys { height: 32px; border-radius: 2px; }
+.omneon-playhead { position: absolute; width: 1px; background: #f4c17f; inset-block: 0; pointer-events: none; }
+.omneon-workspace .omneon-key-marker { position: absolute; top: 0; width: 24px; height: 30px; min-height: 0; transform: translateX(-50%); border: 0; padding: 6px 4px; background: transparent; cursor: ew-resize; touch-action: none; }
+.omneon-key-marker svg { width: 16px; height: 16px; fill: #778fbd; stroke: #c3d7ff; stroke-width: 1; }
+.omneon-key-marker.selected svg { fill: #e3c4ff; stroke: white; }
+.omneon-key-editor { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; min-width: 0; border: 1px solid #3c4253; padding: 10px; border-radius: 5px; font-size: .72rem; }
+.omneon-key-editor .omneon-property-field { width: 82px; }
+.omneon-key-editor > label { display: flex; flex-direction: column; gap: 4px; }
+@container (max-width: 1050px) {
+    .omneon-tree-rail, .omneon-inspector { position: absolute; z-index: 20; top: 0; bottom: 28px; width: min(340px, calc(100% - 20px)); box-shadow: 0 8px 24px #0008; border: 1px solid #44465c; }
+    .omneon-tree-rail { left: 0; }
+    .omneon-inspector { right: 0; }
+    .omneon-resizer.vertical { display: none; }
+}
+@container (max-width: 600px) {
+    .omneon-toolbar-actions { width: 100%; margin-left: 0; }
+    .omneon-toolbar-overflow { margin-left: auto; }
+    .omneon-panel-controls .omneon-toolbar-hint { width: 100%; margin-left: 0; }
+    .omneon-timeline-panel { max-height: 30%; }
+    .omneon-chat { max-height: 30%; }
+    .omneon-proposal-previews { grid-template-columns: 1fr; }
+    .omneon-statusbar { gap: 4px 10px; }
+}
+@media (max-width: 540px) {
+    .launchpad { padding: 14px; }
+    .launchpad-cards { grid-template-columns: 1fr; }
+}
+@media (pointer: coarse) {
+    .omneon-workspace button, .omneon-collection-dialog button, .omneon-template-picker button { min-height: 36px; }
+    .omneon-tree-actions button { width: 30px; }
+}
+
+.omneon-error { max-width: calc(100% - 20px); display: flex; gap: 12px; align-items: center; overflow-wrap: anywhere; z-index: 10; }
+.omneon-error button { flex-shrink: 0; }
+.omneon-timeline-addtrack { flex-wrap: wrap; }
+.omneon-timeline-addtrack select { max-width: 100%; }

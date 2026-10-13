@@ -9,8 +9,10 @@ import CodePanel from './CodePanel';
 import AssetPanel from './AssetPanel';
 import TimelinePanel from './TimelinePanel';
 import FlowPanel from './FlowPanel';
-import PhysicsEditor from './PhysicsEditor';
-import { MATERIAL_COLLECTIONS, WORLD_COLLECTIONS, materialCollectionOps, worldCollectionOps } from './templates';
+import SelectionInspector from './SelectionInspector';
+import ProposalReview from './ProposalReview';
+import CollectionPicker from './CollectionPicker';
+import PanelResizeHandle from './PanelResizeHandle';
 import { AssetRecord } from '../../lib/api';
 import { sceneSystemPrompt, buildSceneUserPrompt, extractJsonObject } from './scene/prompt';
 import { importSceneCode } from './scene/import';
@@ -21,7 +23,7 @@ import { WorkspaceSettings } from '../../types';
 interface OmneonWorkspaceProps {
     project: any;
     artifact: any;
-    onUpdateArtifact: (id: string, html: string) => void;
+    onUpdateArtifact: (id: string, html: string, persist?: boolean) => void;
     settings: WorkspaceSettings;
     providerConfig: ProviderConfig;
 }
@@ -53,6 +55,45 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
     const [selection, setSelection] = useState<string[]>([]);
     const [lastError, setLastError] = useState<string | null>(null);
     const [runtimeReady, setRuntimeReady] = useState(false);
+    const [runtimeError, setRuntimeError] = useState('');
+    const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'failed'>('saved');
+    const [importStatus, setImportStatus] = useState('');
+    const [reviewMessageId, setReviewMessageId] = useState<string | null>(null);
+    const [collectionKind, setCollectionKind] = useState<'materials' | 'worlds' | null>(null);
+    const [panels, setPanels] = useState({ tree: true, inspector: true, timeline: true, chat: true });
+    const [sizes, setSizes] = useState(() => {
+        const defaults = { tree: 220, inspector: 300, timeline: 230, chat: 220 };
+        try {
+            const saved = JSON.parse(localStorage.getItem('omneon-panel-sizes') || '{}');
+            for (const key of Object.keys(defaults) as (keyof typeof defaults)[]) {
+                if (Number.isFinite(saved[key])) defaults[key] = Math.max(key === 'tree' ? 180 : key === 'inspector' ? 240 : 140, Math.min(500, saved[key]));
+            }
+        } catch { /* Use defaults when storage is unavailable. */ }
+        return defaults;
+    });
+    const [resizing, setResizing] = useState(false);
+    const workbench = useRef<HTMLDivElement>(null);
+    const compact = useRef<boolean | null>(null);
+    const artifactIdRef = useRef(artifact.id);
+    artifactIdRef.current = artifact.id;
+    const commitQueue = useRef<Promise<unknown>>(Promise.resolve());
+    const pendingSaves = useRef(0);
+    const dirty = useRef(false);
+    const unsavedMessages = useRef(new Map<string, { beforeRevisionId: string; afterRevisionId: string }>());
+    const togglePanel = (panel: keyof typeof panels) => { if (panel === 'chat') setReviewMessageId(null); setPanels(prev => ({ ...prev, [panel]: !prev[panel], ...(compact.current && (panel === 'tree' || panel === 'inspector') ? { [panel === 'tree' ? 'inspector' : 'tree']: false } : {}) })); };
+    const resizePanel = (panel: keyof typeof sizes, value: number) => setSizes(prev => ({ ...prev, [panel]: value }));
+    useEffect(() => { try { localStorage.setItem('omneon-panel-sizes', JSON.stringify(sizes)); } catch { /* Optional preference. */ } }, [sizes]);
+    useEffect(() => {
+        const observer = new ResizeObserver(entries => {
+            const next = entries[0].contentRect.width < 1050;
+            if (compact.current !== next) {
+                compact.current = next;
+                if (next) setPanels(prev => ({ ...prev, tree: false, inspector: false, ...(entries[0].contentRect.width < 600 ? { timeline: false, chat: false } : {}) }));
+            }
+        });
+        if (workbench.current) observer.observe(workbench.current);
+        return () => observer.disconnect();
+    }, []);
 
     // Scene history state
     const [branch, setBranch] = useState<any>(null);
@@ -83,6 +124,10 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
     /** Compare mode: indices of ops from the checked-out revision selected for selective apply. */
     const [selectiveOps, setSelectiveOps] = useState<Set<number>>(new Set());
 
+    const branchRef = useRef(branch);
+    branchRef.current = branch;
+    const checkoutRef = useRef(checkoutRevision);
+    checkoutRef.current = checkoutRevision;
     const docRef = useRef(document);
     docRef.current = document;
 
@@ -92,6 +137,14 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
         try { setDocument(parseSceneDocument(JSON.parse(artifact?.html || '{}'))); }
         catch { setDocument(createEmptyDocument()); }
         setSelection([]);
+        setLastError(null);
+        setRuntimeError('');
+        dirty.current = false;
+        unsavedMessages.current.clear();
+        setReviewMessageId(null);
+        setSaveStatus('saved');
+        setImportStatus('');
+        setCollectionKind(null);
         setCheckoutRevision(null);
         setLassoActive(false);
         setLassoRegion(null);
@@ -105,10 +158,11 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
     useEffect(() => {
         const bridge = new RuntimeBridge();
         bridgeRef.current = bridge;
+        const startupTimeout = window.setTimeout(() => setRuntimeError('Runtime did not start. Reload the scene to try again.'), 20000);
         const off = bridge.on((event) => {
             switch (event.type) {
-                case 'runtimeReady': setRuntimeReady(true); break;
-                case 'runtimeError': setLastError(event.message); break;
+                case 'runtimeReady': clearTimeout(startupTimeout); setRuntimeError(''); setRuntimeReady(true); break;
+                case 'runtimeError': setRuntimeError(event.message); setLastError(event.message); break;
                 case 'selectionChanged':
                     setSelection(event.ids);
                     setLassoRegion(null);
@@ -149,11 +203,11 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
             }
         });
         if (iframeRef.current) bridge.attach(iframeRef.current);
-        return () => { off(); bridge.dispose(); bridgeRef.current = null; setRuntimeReady(false); };
+        return () => { clearTimeout(startupTimeout); off(); bridge.dispose(); bridgeRef.current = null; setRuntimeReady(false); };
     }, [artifact?.id]);
 
     useEffect(() => {
-        if (runtimeReady) bridgeRef.current?.send({ type: 'loadScene', document });
+        if (runtimeReady) bridgeRef.current?.send({ type: 'loadScene', document: docRef.current });
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [runtimeReady, artifact?.id]);
 
@@ -190,71 +244,105 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
      */
     const commitOps = useCallback(async (
         rawOps: unknown,
-        meta: { source: string; prompt?: string; messageId?: string; branchOverride?: any } = { source: 'manual' },
+        meta: { source: string; prompt?: string; messageId?: string; branchOverride?: any; expectedDocument?: SceneDocument } = { source: 'manual' },
     ): Promise<SceneDocument | null> => {
-        const activeBranch = meta.branchOverride || branch;
-        if (!activeBranch) return null;
-
-        let ops: SceneOperation[];
-        try {
-            ops = parseSceneOperations(rawOps);
-        } catch (e: any) {
-            setLastError(`Invalid operations: ${e.message}`);
-            return null;
-        }
-
-        // Editing an older checked-out revision forks automatically.
-        let targetBranch = activeBranch;
-        if (checkoutRevision && !meta.branchOverride) {
-            try {
-                targetBranch = await api.createBranch(artifact.id, `edit-at-${checkoutRevision.id.slice(-6)}`, checkoutRevision.id);
-                setBranch(targetBranch);
-                setBranches(await api.listBranches(artifact.id));
-                setCheckoutRevision(null);
-            } catch (e: any) {
-                setLastError(`branch: ${e.message}`);
+        pendingSaves.current += 1;
+        setSaveStatus('saving');
+        const run = async (): Promise<SceneDocument | null> => {
+            if (artifactIdRef.current !== artifact.id) return null;
+            if (meta.expectedDocument && meta.expectedDocument !== docRef.current) {
+                setLastError('The scene changed after this preview. Review the updated preview before applying.');
                 return null;
             }
-        }
+            const activeBranch = meta.branchOverride || branchRef.current;
+            if (!activeBranch) { setLastError('Scene history is still connecting. Please try again.'); return null; }
 
-        const beforeDoc = docRef.current;
-        const result = applySceneOperations(beforeDoc, ops);
-        if (!result.ok) {
-            setLastError(result.errors.join('; '));
-            if (meta.messageId) api.updateSceneMessage(meta.messageId, { status: 'failed' }).catch(() => {});
-            return null;
-        }
-        setLastError(null);
-        setDocument(result.document);
-        bridgeRef.current?.send({ type: 'applyOperations', operations: result.applied, document: result.document });
-
-        try {
-            const beforeRev = await api.createSceneRevision({
-                artifactId: artifact.id, branchId: targetBranch.id,
-                document: JSON.stringify(beforeDoc), source: 'snapshot',
-                prompt: meta.prompt ? `before: ${meta.prompt}` : null,
-            });
-            const afterRev = await api.createSceneRevision({
-                artifactId: artifact.id, branchId: targetBranch.id,
-                document: JSON.stringify(result.document), source: meta.source,
-                prompt: meta.prompt ?? null,
-                operations: JSON.stringify(result.applied),
-                selection: JSON.stringify(selection),
-                model: settings.model,
-            });
-            if (meta.messageId) {
-                await api.updateSceneMessage(meta.messageId, {
-                    status: 'applied', beforeRevisionId: beforeRev.id, afterRevisionId: afterRev.id,
-                });
-                setMessages(prev => prev.map(m => m.id === meta.messageId
-                    ? { ...m, status: 'applied', beforeRevisionId: beforeRev.id, afterRevisionId: afterRev.id } : m));
+            let ops: SceneOperation[];
+            try {
+                ops = parseSceneOperations(rawOps);
+            } catch (e: any) {
+                setLastError(`Invalid operations: ${e.message}`);
+                return null;
             }
-            setRevisions(await api.listSceneRevisions(artifact.id, targetBranch.id));
-            onUpdateArtifact(artifact.id, JSON.stringify(result.document));
-        } catch (e: any) {
-            setLastError(`history: ${e.message}`);
-        }
-        return result.document;
+
+            // Editing an older checked-out revision forks automatically.
+            let targetBranch = activeBranch;
+            if (checkoutRef.current && !meta.branchOverride) {
+                try {
+                    targetBranch = await api.createBranch(artifact.id, `edit-at-${checkoutRef.current.id.slice(-6)}`, checkoutRef.current.id);
+                    branchRef.current = targetBranch;
+                    checkoutRef.current = null;
+                    setBranch(targetBranch);
+                    setBranches(await api.listBranches(artifact.id));
+                    setCheckoutRevision(null);
+                } catch (e: any) {
+                    setLastError(`branch: ${e.message}`);
+                    return null;
+                }
+            }
+
+            const beforeDoc = docRef.current;
+            const result = applySceneOperations(beforeDoc, ops);
+            if (!result.ok) {
+                setLastError(result.errors.join('; '));
+                if (meta.messageId) api.updateSceneMessage(meta.messageId, { status: 'failed' }).catch(() => {});
+                return null;
+            }
+            setLastError(null);
+            dirty.current = true;
+            if (meta.messageId) setMessages(prev => prev.map(m => m.id === meta.messageId ? { ...m, status: 'applied' } : m));
+            docRef.current = result.document;
+            setDocument(result.document);
+            bridgeRef.current?.send({ type: 'applyOperations', operations: result.applied, document: result.document });
+
+            try {
+                const beforeRev = await api.createSceneRevision({
+                    artifactId: artifact.id, branchId: targetBranch.id,
+                    document: JSON.stringify(beforeDoc), source: 'snapshot',
+                    prompt: meta.prompt ? `before: ${meta.prompt}` : null,
+                });
+                const afterRev = await api.createSceneRevision({
+                    artifactId: artifact.id, branchId: targetBranch.id,
+                    document: JSON.stringify(result.document), source: meta.source,
+                    prompt: meta.prompt ?? null,
+                    operations: JSON.stringify(result.applied),
+                    selection: JSON.stringify(selection),
+                    model: settings.model,
+                });
+                if (meta.messageId && artifactIdRef.current === artifact.id) unsavedMessages.current.set(meta.messageId, { beforeRevisionId: beforeRev.id, afterRevisionId: afterRev.id });
+                await api.updateArtifact(artifact.id, { html: JSON.stringify(result.document) });
+                onUpdateArtifact(artifact.id, JSON.stringify(result.document), false);
+                if (artifactIdRef.current !== artifact.id) return result.document;
+                for (const [messageId, revisionIds] of unsavedMessages.current) {
+                    await api.updateSceneMessage(messageId, { status: 'applied', beforeRevisionId: revisionIds.beforeRevisionId || beforeRev.id, afterRevisionId: revisionIds.afterRevisionId || afterRev.id });
+                    if (artifactIdRef.current !== artifact.id) return result.document;
+                    setMessages(prev => prev.map(m => m.id === messageId ? { ...m, status: 'applied', beforeRevisionId: revisionIds.beforeRevisionId || beforeRev.id, afterRevisionId: revisionIds.afterRevisionId || afterRev.id } : m));
+                    unsavedMessages.current.delete(messageId);
+                }
+                const savedRevisions = await api.listSceneRevisions(artifact.id, targetBranch.id);
+                if (artifactIdRef.current !== artifact.id) return result.document;
+                setRevisions(savedRevisions);
+                dirty.current = false;
+                setSaveStatus('saved');
+            } catch (e: any) {
+                if (artifactIdRef.current === artifact.id) {
+                    if (meta.messageId && !unsavedMessages.current.has(meta.messageId)) unsavedMessages.current.set(meta.messageId, { beforeRevisionId: '', afterRevisionId: '' });
+                    setSaveStatus('failed');
+                    setLastError(`Could not save scene: ${e.message}. Your edits are still in the canvas; use Retry save.`);
+                }
+                return null;
+            }
+            return result.document;
+        };
+        const task = commitQueue.current.then(run, run).catch((error: any) => {
+            if (artifactIdRef.current === artifact.id) setLastError(`Could not apply edit: ${error.message}`);
+            return null;
+        });
+        commitQueue.current = task.catch(() => null);
+        return task.finally(() => {
+            pendingSaves.current -= 1;
+            if (artifactIdRef.current === artifact.id) setSaveStatus(pendingSaves.current ? 'saving' : dirty.current ? 'failed' : 'saved');
+        });
     }, [branch, checkoutRevision, artifact?.id, selection, settings.model, onUpdateArtifact]);
 
     const commitRef = useRef(commitOps);
@@ -329,39 +417,48 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
     }, [input, busy, conversation, settings, providerConfig, branch, selection, messages]);
 
     const applyProposal = useCallback((msg: SceneMsg) => {
-        if (!msg.operations) return;
+        if (!msg.operations || pendingSaves.current) return;
         try {
             const ops = JSON.parse(msg.operations);
-            commitOps(ops, { source: 'chat', prompt: msg.explanation || msg.text, messageId: msg.id });
+            commitOps(ops, { source: 'chat', prompt: msg.explanation || msg.text, messageId: msg.id, expectedDocument: docRef.current });
         } catch { /* validated at proposal time */ }
     }, [commitOps]);
 
     const discardProposal = useCallback((msg: SceneMsg) => {
-        api.updateSceneMessage(msg.id, { status: 'discarded' }).catch(() => {});
+        api.updateSceneMessage(msg.id, { status: 'discarded' }).catch((error: any) => setLastError(`Could not save proposal decision: ${error.message}`));
         setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, status: 'discarded' } : m));
     }, []);
 
     const tryOnNewBranch = useCallback(async (msg: SceneMsg) => {
-        if (!msg.operations || !branch) return;
+        if (!msg.operations || !branch || pendingSaves.current) return;
+        const expectedDocument = docRef.current;
+        setBusy(true);
         try {
             const ops = JSON.parse(msg.operations);
             const head = revisions.length ? revisions[revisions.length - 1] : null;
             const newBranch = await api.createBranch(artifact.id, `try-${Date.now().toString(36)}`, head?.id ?? null);
+            branchRef.current = newBranch;
             setBranch(newBranch);
             setBranches(await api.listBranches(artifact.id));
-            await commitOps(ops, { source: 'chat', prompt: msg.explanation || msg.text, messageId: msg.id, branchOverride: newBranch });
-            api.updateSceneMessage(msg.id, { status: 'applied' }).catch(() => {});
+            await commitOps(ops, { source: 'chat', prompt: msg.explanation || msg.text, messageId: msg.id, branchOverride: newBranch, expectedDocument });
         } catch (e: any) {
             setLastError(`branch: ${e.message}`);
+        } finally {
+            setBusy(false);
         }
     }, [branch, revisions, artifact?.id, commitOps]);
 
     /* ---------------------------- history -------------------------------- */
 
     const checkout = useCallback((rev: any) => {
+        if (pendingSaves.current || (dirty.current && !window.confirm('Discard unsaved edits and view this revision?'))) return;
         try {
             const doc = parseSceneDocument(JSON.parse(rev.document));
+            dirty.current = false;
+            setSaveStatus('saved');
+            checkoutRef.current = rev;
             setCheckoutRevision(rev);
+            docRef.current = doc;
             setDocument(doc);
             bridgeRef.current?.send({ type: 'loadScene', document: doc });
         } catch (e: any) {
@@ -370,47 +467,72 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
     }, []);
 
     const backToHead = useCallback(() => {
+        if (pendingSaves.current || (dirty.current && !window.confirm('Discard unsaved edits and return to the saved scene?'))) return false;
+        checkoutRef.current = null;
         setCheckoutRevision(null);
         try {
-            setDocument(parseSceneDocument(JSON.parse(artifact.html)));
-            bridgeRef.current?.send({ type: 'loadScene', document: parseSceneDocument(JSON.parse(artifact.html)) });
-        } catch { /* ignore */ }
+            docRef.current = parseSceneDocument(JSON.parse(artifact.html));
+            setDocument(docRef.current);
+            bridgeRef.current?.send({ type: 'loadScene', document: docRef.current });
+            dirty.current = false;
+            setSaveStatus('saved');
+            return true;
+        } catch { return false; }
     }, [artifact?.html]);
 
     const useThisVersion = useCallback(async (rev: any) => {
-        if (!branch) return;
+        if (!branch || pendingSaves.current || !window.confirm('Replace the current scene with this saved version?')) return;
+        setSaveStatus('saving');
         try {
             const promoted = await api.promoteRevision(rev.id, branch.id, 'Use this version');
             const doc = parseSceneDocument(JSON.parse(promoted.document));
+            dirty.current = true;
+            checkoutRef.current = null;
+            docRef.current = doc;
             setDocument(doc);
             setCheckoutRevision(null);
             bridgeRef.current?.send({ type: 'loadScene', document: doc });
-            onUpdateArtifact(artifact.id, JSON.stringify(doc));
+            await api.updateArtifact(artifact.id, { html: JSON.stringify(doc) });
+            onUpdateArtifact(artifact.id, JSON.stringify(doc), false);
             setRevisions(await api.listSceneRevisions(artifact.id, branch.id));
+            dirty.current = false;
+            setSaveStatus('saved');
         } catch (e: any) {
+            setSaveStatus(dirty.current ? 'failed' : 'saved');
             setLastError(`promote: ${e.message}`);
         }
     }, [branch, artifact?.id, onUpdateArtifact]);
 
     const switchBranch = useCallback(async (branchId: string) => {
-        const b = branches.find(x => x.id === branchId);
-        if (!b) return;
-        setBranch(b);
-        const revs = await api.listSceneRevisions(artifact.id, b.id);
-        setRevisions(revs);
-        const head = revs[revs.length - 1];
-        if (head) {
-            try {
-                const doc = parseSceneDocument(JSON.parse(head.document));
-                setDocument(doc);
-                bridgeRef.current?.send({ type: 'loadScene', document: doc });
-                onUpdateArtifact(artifact.id, JSON.stringify(doc));
-            } catch { /* ignore */ }
+        const next = branches.find(b => b.id === branchId);
+        if (!next || pendingSaves.current || (dirty.current && !window.confirm('Discard unsaved edits and switch scene branches?'))) return;
+        setSaveStatus('saving');
+        try {
+            const revs = await api.listSceneRevisions(artifact.id, next.id);
+            let head = revs[revs.length - 1];
+            if (!head && next.parentRevisionId) head = (await api.listSceneRevisions(artifact.id)).find(r => r.id === next.parentRevisionId);
+            const nextDoc = head ? parseSceneDocument(JSON.parse(head.document)) : createEmptyDocument();
+            const convo = await api.getOrCreateConversation(artifact.id, next.id);
+            await api.updateArtifact(artifact.id, { html: JSON.stringify(nextDoc) });
+            onUpdateArtifact(artifact.id, JSON.stringify(nextDoc), false);
+            if (artifactIdRef.current !== artifact.id) return;
+            branchRef.current = next;
+            checkoutRef.current = null;
+            docRef.current = nextDoc;
+            dirty.current = false;
+            unsavedMessages.current.clear();
+            setBranch(next);
+            setDocument(nextDoc);
+            setRevisions(revs);
+            setConversation(convo);
+            setMessages(convo.messages || []);
+            setCheckoutRevision(null);
+            setSaveStatus('saved');
+            bridgeRef.current?.send({ type: 'loadScene', document: nextDoc });
+        } catch (error: any) {
+            setSaveStatus(dirty.current ? 'failed' : 'saved');
+            setLastError(`Could not switch branch: ${error.message}`);
         }
-        const convo = await api.getOrCreateConversation(artifact.id, b.id);
-        setConversation(convo);
-        setMessages(convo.messages || []);
-        setCheckoutRevision(null);
     }, [branches, artifact?.id, onUpdateArtifact]);
 
     /* ------------------------------ render -------------------------------- */
@@ -444,6 +566,7 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
         const onKey = (e: KeyboardEvent) => {
             if (e.key !== 'Delete' && e.key !== 'Backspace') return;
             const t = e.target as HTMLElement;
+            if (t?.closest('.omneon-timeline, .omneon-collection-dialog, .omneon-chat, .omneon-inspector')) return;
             if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
             const ids = selection.filter(id => !docRef.current.nodes.find(n => n.id === id)?.locked);
             if (!ids.length) return;
@@ -457,6 +580,7 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
     }, [selection]);
 
     const askAboutSelection = useCallback((preset: string) => {
+        setPanels(prev => ({ ...prev, chat: true }));
         setInput(preset);
     }, []);
 
@@ -472,9 +596,9 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
     /* ------------------------------ assets ------------------------------- */
 
     /** Route an asset into the scene through the single typed ops path. */
-    const applyAsset = useCallback((asset: AssetRecord, target: 'scene' | 'selection' | 'environment') => {
+    const applyAsset = useCallback(async (asset: AssetRecord, target: 'scene' | 'selection' | 'environment') => {
         if (target === 'scene' && asset.kind === 'model') {
-            commitOps([{ op: 'node.add', node: { name: asset.name.replace(/\.[^.]+$/, ''), kind: 'mesh', geometry: { type: 'model', assetId: asset.id } } }],
+            return commitOps([{ op: 'node.add', node: { name: asset.name.replace(/\.[^.]+$/, ''), kind: 'mesh', geometry: { type: 'model', assetId: asset.id } } }],
                 { source: 'asset', prompt: `Import model: ${asset.name}` });
         } else if (target === 'selection' && asset.kind === 'texture') {
             if (selection.length === 0) { setLastError('Select a mesh before applying a texture.'); return; }
@@ -484,9 +608,9 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
                 material: { id: materialId, name: asset.name, props: { textureAssetId: asset.id } },
             }];
             for (const id of selection) ops.push({ op: 'material.assign', id, materialId });
-            commitOps(ops, { source: 'asset', prompt: `Texture ${asset.name} → ${selection.length} node(s)` });
+            return commitOps(ops, { source: 'asset', prompt: `Texture ${asset.name} → ${selection.length} node(s)` });
         } else if (target === 'environment' && asset.kind === 'hdr') {
-            commitOps([{ op: 'world.update', world: { environmentAssetId: asset.id } }],
+            return commitOps([{ op: 'world.update', world: { environmentAssetId: asset.id } }],
                 { source: 'asset', prompt: `Environment: ${asset.name}` });
         }
     }, [commitOps, selection]);
@@ -494,14 +618,15 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
     /** Migration (step 16): import an existing scene from code or JSON. */
     const importFileRef = useRef<HTMLInputElement | null>(null);
     const handleImportScene = useCallback(async (file: File) => {
-        const text = await file.text();
-        const result = importSceneCode(text);
-        if (!result.ok) {
-            setLastError(`import: ${result.errors.join('; ')}`);
-            return;
-        }
-        const committed = await commitOps(result.operations, { source: 'import', prompt: `Import scene from ${file.name}` });
-        if (committed) setLastError(null);
+        setImportStatus(`Importing ${file.name}…`);
+        try {
+            const text = await file.text();
+            const result = importSceneCode(text);
+            if (!result.ok) throw new Error(result.errors.join('; '));
+            if (result.operations.some((op: any) => op.op === 'node.remove') && !window.confirm('This import removes existing objects. Import this scene?')) { setImportStatus('Import cancelled'); return; }
+            const committed = await commitOps(result.operations, { source: 'import', prompt: `Import scene from ${file.name}` });
+            setImportStatus(committed ? `Imported ${file.name}` : `Could not finish importing ${file.name}`);
+        } catch (error: any) { setImportStatus(`Import failed: ${file.name}`); setLastError(error.message); }
     }, [commitOps]);
 
     /** Files dropped on the viewport: import to the library, then apply. */    const handleViewportDrop = useCallback(async (e: React.DragEvent) => {
@@ -509,6 +634,7 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
         const files = e.dataTransfer?.files;
         if (!files || files.length === 0) return;
         for (const file of Array.from(files)) {
+            setImportStatus(`Importing ${file.name}…`);
             try {
                 const buf = await file.arrayBuffer();
                 let binary = '';
@@ -517,139 +643,68 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
                     binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
                 }
                 const asset = await api.importLocalAsset({ name: file.name, contentBase64: btoa(binary) });
-                if (asset.kind === 'model') applyAsset(asset, 'scene');
-                else if (asset.kind === 'texture') applyAsset(asset, 'selection');
-                else if (asset.kind === 'hdr') applyAsset(asset, 'environment');
+                const applied = asset.kind === 'model' ? await applyAsset(asset, 'scene')
+                    : asset.kind === 'texture' ? await applyAsset(asset, 'selection')
+                    : asset.kind === 'hdr' ? await applyAsset(asset, 'environment') : null;
+                setImportStatus(applied ? `Imported ${file.name} into scene` : `${file.name} saved to library; not applied`);
             } catch (err: any) {
+                setImportStatus(`Import failed: ${file.name}`);
                 setLastError(`import: ${err.message}`);
             }
         }
     }, [applyAsset]);
 
     return (
-        <div className="omneon-workspace">
+        <div ref={workbench} className={`omneon-workspace ${resizing ? 'is-resizing' : ''}`} style={{
+            '--tree-width': `${sizes.tree}px`, '--inspector-width': `${sizes.inspector}px`,
+            '--timeline-height': `${sizes.timeline}px`, '--chat-height': `${sizes.chat}px`,
+        } as React.CSSProperties}>
             <div className="omneon-main">
                 <div className="omneon-toolbar">
                     <span className="omneon-toolbar-title">{project?.name || 'Scene'}</span>
-                    <select
-                        className="omneon-branch-select"
-                        value={branch?.id || ''}
-                        onChange={e => switchBranch(e.target.value)}
-                    >
+                    <select className="omneon-branch-select" aria-label="Scene branch" value={branch?.id || ''} disabled={saveStatus === 'saving'} onChange={e => switchBranch(e.target.value)}>
                         {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
                     </select>
-                    <span className="omneon-toolbar-hint">
-                        {runtimeReady ? `${document.nodes.length} node(s)` : 'loading runtime…'}
-                        {checkoutRevision ? ' · viewing old revision' : ''}
-                    </span>
                     <div className="omneon-toolbar-actions">
-                        <button onClick={() => commitOps([{ op: 'node.add', node: { name: 'Box', kind: 'mesh', geometry: { type: 'box' } } }], { source: 'manual' })}>+ Box</button>
-                        <button onClick={() => commitOps([{ op: 'node.add', node: { name: 'Sphere', kind: 'mesh', geometry: { type: 'sphere' } } }], { source: 'manual' })}>+ Sphere</button>
-                        <button onClick={() => commitOps([{ op: 'node.add', node: { name: 'Sun', kind: 'light', light: { type: 'directional', intensity: 1.5 }, transform: { position: { x: 4, y: 6, z: 4 } } } }], { source: 'manual' })}>+ Light</button>
-                        <span className="omneon-toolbar-sep" />
-                        <button
-                            className={transformMode === 'translate' ? 'omneon-active' : ''}
-                            aria-label="Translate handle"
-                            onClick={() => setTransformMode(transformMode === 'translate' ? null : 'translate')}
-                        >↕</button>
-                        <button
-                            className={transformMode === 'rotate' ? 'omneon-active' : ''}
-                            aria-label="Rotate handle"
-                            onClick={() => setTransformMode(transformMode === 'rotate' ? null : 'rotate')}
-                        >⟳</button>
-                        <button
-                            className={transformMode === 'scale' ? 'omneon-active' : ''}
-                            aria-label="Scale handle"
-                            onClick={() => setTransformMode(transformMode === 'scale' ? null : 'scale')}
-                        >⤢</button>
-                        <button aria-label="Toggle world/local space" onClick={() => setSpaceMode(s => s === 'world' ? 'local' : 'world')}>{spaceMode === 'world' ? 'W' : 'L'}</button>
-                        <button
-                            className={snapping ? 'omneon-active' : ''}
-                            aria-label="Toggle snapping"
-                            onClick={() => setSnapping(s => !s)}
-                        >⌗</button>
-                        <button
-                            className={lassoActive ? 'omneon-active' : ''}
-                            aria-label="Rectangle selection"
-                            onClick={() => { const next = !lassoActive; setLassoActive(next); toggleLasso(next); }}
-                        >▭</button>
-                        <button
-                            className={splitView ? 'omneon-active' : ''}
-                            aria-label="Split viewport"
-                            onClick={() => toggleSplit(!splitView, secondaryView)}
-                        >⿻</button>
-                        {splitView && (
-                            <select
-                                className="omneon-branch-select"
-                                value={secondaryView}
-                                onChange={e => {
-                                    const v = e.target.value as typeof secondaryView;
-                                    setSecondaryView(v);
-                                    bridgeRef.current?.send({ type: 'setViewport', mode: 'split', secondary: v });
-                                }}
-                            >
-                                <option value="top">top</option>
-                                <option value="front">front</option>
-                                <option value="side">side</option>
-                                <option value="persp">persp</option>
-                            </select>
-                        )}
-                        <span className="omneon-toolbar-sep" />
-                        <button
-                            className={physicsState.running ? 'omneon-active' : ''}
-                            title={physicsState.running ? 'Pause physics' : 'Run physics (loads Rapier WASM on first use)'}
-                            onClick={() => bridgeRef.current?.send({ type: physicsState.running ? 'physicsPause' : 'physicsStart' })}
-                        >⚛{physicsState.running ? '⏸' : '▶'}</button>
-                        <button title="Step physics one frame" onClick={() => bridgeRef.current?.send({ type: 'physicsStep' })}>⏭</button>
-                        <button title="Reset physics to document transforms" onClick={() => bridgeRef.current?.send({ type: 'physicsReset' })}>⟲</button>
-                        <button
-                            title="Bake 3s of physics to keyframes"
-                            onClick={() => bridgeRef.current?.send({ type: 'physicsBake', duration: 3, fps: 30 })}
-                        >⏺Bake</button>
-                        <button
-                            title="Export as self-contained Web App ZIP (three + rapier bundled locally)"
-                            onClick={() => { window.open(`/api/packager/artifacts/${artifact.id}/export`, '_blank'); }}
-                        >⇩ ZIP</button>
-                        <button
-                            title="Import an existing Omneon scene (.ts/.js managed module or SceneDocument .json)"
-                            onClick={() => importFileRef.current?.click()}
-                        >⇪ Import</button>
-                        <input
-                            ref={importFileRef}
-                            type="file"
-                            accept=".ts,.js,.json"
-                            style={{ display: 'none' }}
-                            onChange={e => { const f = e.target.files?.[0]; if (f) handleImportScene(f); e.target.value = ''; }}
-                        />
-                        <span className="omneon-toolbar-sep" />
-                        <select
-                            className="omneon-branch-select"
-                            value=""
-                            title="Apply a material collection"
-                            onChange={e => {
-                                if (e.target.value) commitOps(materialCollectionOps(e.target.value), { source: 'template', prompt: `Apply material collection: ${e.target.value}` });
-                                e.target.value = '';
-                            }}
-                        >
-                            <option value="">Materials…</option>
-                            {MATERIAL_COLLECTIONS.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                        </select>
-                        <select
-                            className="omneon-branch-select"
-                            value=""
-                            title="Apply a world collection"
-                            onChange={e => {
-                                if (e.target.value) commitOps(worldCollectionOps(e.target.value), { source: 'template', prompt: `Apply world collection: ${e.target.value}` });
-                                e.target.value = '';
-                            }}
-                        >
-                            <option value="">Worlds…</option>
-                            {WORLD_COLLECTIONS.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                        </select>
+                        {(['translate', 'rotate', 'scale'] as const).map(mode => <button key={mode} aria-pressed={transformMode === mode} className={transformMode === mode ? 'omneon-active' : ''} onClick={() => setTransformMode(transformMode === mode ? null : mode)}>{mode === 'translate' ? 'Move' : mode === 'rotate' ? 'Rotate' : 'Scale'}</button>)}
+                        <button aria-pressed={snapping} className={snapping ? 'omneon-active' : ''} title="Snap: position 0.5, rotation 15°, scale 0.1" onClick={() => setSnapping(s => !s)}>Snap</button>
+                        <details className="omneon-toolbar-overflow" onKeyDown={e => { if (e.key === 'Escape') { e.currentTarget.open = false; e.currentTarget.querySelector('summary')?.focus(); } }} onBlur={e => { if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node)) e.currentTarget.open = false; }}>
+                            <summary>More</summary>
+                            <div className="omneon-overflow-content">
+                                <h4>Add objects</h4>
+                                <button disabled={!branch} onClick={() => commitOps([{ op: 'node.add', node: { name: 'Box', kind: 'mesh', geometry: { type: 'box' } } }], { source: 'manual' })}>Add box</button>
+                                <button disabled={!branch} onClick={() => commitOps([{ op: 'node.add', node: { name: 'Sphere', kind: 'mesh', geometry: { type: 'sphere' } } }], { source: 'manual' })}>Add sphere</button>
+                                <button disabled={!branch} onClick={() => commitOps([{ op: 'node.add', node: { name: 'Sun', kind: 'light', light: { type: 'directional', intensity: 1.5 }, transform: { position: { x: 4, y: 6, z: 4 } } } }], { source: 'manual' })}>Add light</button>
+                                <h4>Canvas</h4>
+                                <button onClick={() => setSpaceMode(s => s === 'world' ? 'local' : 'world')}>Space: {spaceMode}</button>
+                                <button aria-pressed={lassoActive} onClick={() => { setLassoActive(!lassoActive); toggleLasso(!lassoActive); }}>Rectangle selection {lassoActive ? 'on' : 'off'}</button>
+                                <button aria-pressed={splitView} onClick={() => toggleSplit(!splitView, secondaryView)}>Split view {splitView ? 'on' : 'off'}</button>
+                                {splitView && <select aria-label="Secondary view" value={secondaryView} onChange={e => {
+                                    const value = e.target.value as typeof secondaryView; setSecondaryView(value);
+                                    bridgeRef.current?.send({ type: 'setViewport', mode: 'split', secondary: value });
+                                }}><option value="top">Top</option><option value="front">Front</option><option value="side">Side</option><option value="persp">Perspective</option></select>}
+                                <h4>Physics</h4>
+                                <button disabled={!runtimeReady} onClick={() => bridgeRef.current?.send({ type: physicsState.running ? 'physicsPause' : 'physicsStart' })}>{physicsState.running ? 'Pause physics' : 'Run physics'}</button>
+                                <button disabled={!runtimeReady} onClick={() => bridgeRef.current?.send({ type: 'physicsStep' })}>Step one frame</button>
+                                <button disabled={!runtimeReady} onClick={() => bridgeRef.current?.send({ type: 'physicsReset' })}>Reset simulation</button>
+                                <button disabled={!runtimeReady || !branch} onClick={() => bridgeRef.current?.send({ type: 'physicsBake', duration: 3, fps: 30 })}>Bake 3 seconds to keyframes</button>
+                                <h4>Collections & files</h4>
+                                <button disabled={!branch} onClick={() => { setLastError(null); setCollectionKind('materials'); }}>Browse materials</button>
+                                <button disabled={!branch} onClick={() => { setLastError(null); setCollectionKind('worlds'); }}>Browse worlds</button>
+                                <button onClick={() => window.open(`/api/packager/artifacts/${artifact.id}/export`, '_blank')}>Export web app ZIP</button>
+                                <button disabled={!branch} onClick={() => importFileRef.current?.click()}>Import scene…</button>
+                            </div>
+                        </details>
+                        <input ref={importFileRef} type="file" accept=".ts,.js,.json" hidden onChange={e => { const file = e.target.files?.[0]; if (file) handleImportScene(file); e.target.value = ''; }} />
                     </div>
                 </div>
+                <div className="omneon-panel-controls" role="group" aria-label="Workbench panels">
+                    {(['tree', 'inspector', 'timeline', 'chat'] as const).map(panel => <button key={panel} aria-controls={`omneon-${panel}-panel`} aria-expanded={panels[panel]} className={panels[panel] ? 'omneon-active' : ''} onClick={() => togglePanel(panel)}>{panel === 'tree' ? 'Objects' : panel === 'chat' ? 'Chat' : panel === 'timeline' ? 'Timeline' : 'Inspector'}</button>)}
+                    <span className="omneon-toolbar-hint">{document.nodes.length} objects{checkoutRevision ? ' · Earlier revision' : ''}</span>
+                </div>
                 <div className="omneon-content-row">
-                    <div className="omneon-tree-rail">
+                    <div id="omneon-tree-panel" className="omneon-tree-rail" hidden={!panels.tree}>
+                        <div className="omneon-panel-heading"><strong>Objects</strong><button aria-label="Collapse objects" onClick={() => togglePanel('tree')}>Hide</button></div>
                         <SceneGraph
                             document={document}
                             selection={selection}
@@ -658,6 +713,7 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
                             onAskAI={askAboutSelection}
                         />
                     </div>
+                    {panels.tree && <PanelResizeHandle label="Resize objects" value={sizes.tree} min={180} max={420} onChange={value => resizePanel('tree', value)} onResizing={setResizing} />}
                     <div
                         className="omneon-viewport-wrap"
                         onDragOver={e => e.preventDefault()}
@@ -669,45 +725,48 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
                         title="Omneon scene runtime"
                         sandbox="allow-scripts"
                     />
-                    {lastError && <div className="omneon-error" onClick={() => setLastError(null)}>{lastError}</div>}
+                    {lastError && <div className="omneon-error" role="alert"><span>{lastError}</span><button onClick={() => setLastError(null)} aria-label="Dismiss error">Dismiss</button></div>}
                     {checkoutRevision && (
                         <div className="omneon-checkout-banner">
                             <span className="omneon-compare-left">← this revision</span>
                             <span>Comparing: revision vs current head →</span>
                             <button onClick={() => useThisVersion(checkoutRevision)}>Use Left</button>
                             <button onClick={backToHead}>Use Right</button>
-                            <button onClick={() => setInspectorTab('history')}>Selectively Apply…</button>
+                            <button onClick={() => { setInspectorTab('history'); setPanels(p => ({ ...p, inspector: true })); }}>Selectively Apply…</button>
                         </div>
                     )}
                     </div>
                 </div>
 
-                {/* Animation timeline */}
+                {panels.timeline && <PanelResizeHandle label="Resize timeline" vertical reverse value={sizes.timeline} min={140} max={440} onChange={value => resizePanel('timeline', value)} onResizing={setResizing} />}
+                <section id="omneon-timeline-panel" className="omneon-timeline-panel" hidden={!panels.timeline}>
+                <div className="omneon-panel-heading"><strong>Timeline</strong><button aria-label="Collapse timeline" onClick={() => togglePanel('timeline')}>Hide</button></div>
                 <TimelinePanel
                     document={document}
                     selection={selection}
                     playing={playback.playing}
                     time={playback.time}
                     duration={playback.duration}
+                    disabled={saveStatus === 'saving' || !branch}
                     onPlay={(nodeId, clipId) => bridgeRef.current?.send({ type: 'play', nodeId, clipId })}
                     onPause={() => bridgeRef.current?.send({ type: 'pause' })}
-                    onSeek={t => bridgeRef.current?.send({ type: 'seek', time: t })}
+                    onSeek={(t, nodeId, clipId) => { setPlayback(p => ({ ...p, time: t })); bridgeRef.current?.send({ type: 'seek', time: t, nodeId, clipId }); }}
                     onCommitOps={(ops, prompt) => commitOps(ops, { source: 'timeline', prompt })}
                 />
 
-                {/* Unified conversation */}
-                <div className="omneon-chat">
+                </section>
+                {panels.chat && <PanelResizeHandle label="Resize chat" vertical reverse value={sizes.chat} min={140} max={500} onChange={value => resizePanel('chat', value)} onResizing={setResizing} />}
+                <div id="omneon-chat-panel" className="omneon-chat" hidden={!panels.chat}>
+                    <div className="omneon-panel-heading"><strong>Scene chat</strong><button aria-label="Collapse chat" onClick={() => togglePanel('chat')}>Hide</button></div>
                     <div className="omneon-chat-messages">
+                        {!messages.length && <p className="omneon-help">Describe a change to your scene. Review the affected objects and preview before applying it.</p>}
                         {messages.map(m => (
                             <div key={m.id} className={`omneon-msg omneon-msg-${m.role} ${m.status === 'discarded' ? 'omneon-msg-discarded' : ''}`}>
                                 <div className="omneon-msg-text">{m.explanation || m.text}</div>
                                 {m.role === 'assistant' && m.operations && m.status === 'pending' && (
-                                    <div className="omneon-msg-actions">
-                                        <button onClick={() => applyProposal(m)} disabled={busy}>Apply</button>
-                                        <button onClick={() => { setInput(`Revise: ${m.explanation || m.text} — `); }}>Revise</button>
-                                        <button onClick={() => tryOnNewBranch(m)} disabled={busy}>Try on New Branch</button>
-                                        <button onClick={() => discardProposal(m)}>Discard</button>
-                                    </div>
+                                    <ProposalReview open={reviewMessageId === m.id} onToggle={() => setReviewMessageId(reviewMessageId === m.id ? null : m.id)} document={document} operations={m.operations} busy={busy || saveStatus === 'saving'}
+                                        onApply={() => applyProposal(m)} onBranch={() => tryOnNewBranch(m)}
+                                        onRevise={() => setInput(`Revise: ${m.explanation || m.text} — `)} onDiscard={() => discardProposal(m)} />
                                 )}
                                 {m.role === 'assistant' && m.status === 'applied' && m.operations && (
                                     <div className="omneon-msg-status">applied</div>
@@ -721,18 +780,28 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
                     </div>
                     <div className="omneon-chat-input">
                         <input
+                            aria-label="Message scene assistant"
                             value={input}
                             onChange={e => setInput(e.target.value)}
                             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
                             placeholder='Try "add a sphere", "make it glass", "have it orbit the cube"…'
                             disabled={busy || !conversation}
                         />
-                        <button onClick={handleSend} disabled={busy || !input.trim()}>Send</button>
+                        <button onClick={handleSend} disabled={busy || !conversation || !input.trim()}>Send</button>
                     </div>
+                </div>
+                <div className="omneon-statusbar" role="status" aria-live="polite">
+                    <span className={saveStatus === 'failed' ? 'omneon-field-error' : ''}>{saveStatus === 'saving' ? 'Saving…' : saveStatus === 'failed' ? 'Save failed · edits retained' : 'Saved'}</span>
+                    {saveStatus === 'failed' && <button onClick={() => commitOps([], { source: 'recovery', prompt: 'Save recovered edits' })}>Retry save</button>}
+                    <span title={runtimeError || undefined}>{runtimeError ? 'Runtime error' : runtimeReady ? 'Runtime ready' : 'Starting runtime…'}</span>
+                    <span>{importStatus || 'Import ready'}</span>
+                    {!branch && <span>Connecting history…</span>}
                 </div>
             </div>
 
-            <div className="omneon-inspector">
+            {panels.inspector && <PanelResizeHandle label="Resize inspector" reverse value={sizes.inspector} min={260} max={520} onChange={value => resizePanel('inspector', value)} onResizing={setResizing} />}
+            <div id="omneon-inspector-panel" className="omneon-inspector" hidden={!panels.inspector}>
+                <div className="omneon-panel-heading"><strong>Inspector</strong><button aria-label="Collapse inspector" onClick={() => togglePanel('inspector')}>Hide</button></div>
                 <div className="omneon-inspector-tabs">
                     {(['selection', 'flow', 'code', 'history', 'assets'] as const).map(t => (
                         <button
@@ -748,14 +817,7 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
                         <div className="omneon-inspector-title">Selection</div>
                         {selectedNodes.length === 0 && <div className="omneon-inspector-empty">Click an object in the viewport.</div>}
                         {selectedNodes.map(node => node && (
-                            <div key={node.id} className="omneon-inspector-card">
-                                <div className="omneon-inspector-name">{node.name}</div>
-                                <div className="omneon-inspector-id">{node.id}</div>
-                                <div className="omneon-inspector-row">
-                                    <span>Position</span>
-                                    <span>{[node.transform.position.x, node.transform.position.y, node.transform.position.z].map(v => v.toFixed(2)).join(', ')}</span>
-                                </div>
-                            </div>
+                            <SelectionInspector key={node.id} node={node} document={document} disabled={saveStatus === 'saving' || !branch} onCommitOps={(ops, prompt) => commitOps(ops, { source: 'inspector', prompt })} />
                         ))}
                     </>
                 )}
@@ -820,9 +882,10 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
                                         disabled={selectiveOps.size === 0}
                                         onClick={() => {
                                             const chosen = ops!.filter((_, i) => selectiveOps.has(i));
-                                            commitOps(chosen, { source: 'compare', prompt: `Selectively applied ${chosen.length} op(s) from revision` });
-                                            setSelectiveOps(new Set());
-                                            backToHead();
+                                            if (backToHead()) {
+                                                commitOps(chosen, { source: 'compare', prompt: `Selectively applied ${chosen.length} op(s) from revision` });
+                                                setSelectiveOps(new Set());
+                                            }
                                         }}
                                     >Apply {selectiveOps.size > 0 ? `${selectiveOps.size} ` : ''}selected to head</button>
                                 </div>
@@ -831,6 +894,7 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
                     </>
                 )}
             </div>
+            {collectionKind && <CollectionPicker key={collectionKind} kind={collectionKind} document={document} error={lastError} onClose={() => setCollectionKind(null)} onApply={(ops, name) => commitOps(ops, { source: 'template', prompt: `Apply ${name}`, expectedDocument: document })} />
         </div>
     );
 };

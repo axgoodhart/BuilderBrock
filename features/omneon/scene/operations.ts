@@ -47,6 +47,14 @@ export const SceneOperationSchema = z.discriminatedUnion('op', [
         id: nodeId,
         geometry: GeometrySchema,
     }),
+    z.object({ op: z.literal('node.setLight'), id: nodeId, light: z.object({
+        type: z.enum(['directional', 'point', 'spot', 'ambient', 'hemisphere']).optional(),
+        color: z.string().optional(), intensity: z.number().min(0).optional(), castShadow: z.boolean().optional(),
+    }) }),
+    z.object({ op: z.literal('node.setCamera'), id: nodeId, camera: z.object({
+        type: z.enum(['perspective', 'orthographic']).optional(), fov: z.number().positive().optional(),
+        near: z.number().positive().optional(), far: z.number().positive().optional(),
+    }) }),
     z.object({
         op: z.literal('material.define'),
         material: z.object({

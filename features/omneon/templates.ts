@@ -30,6 +30,7 @@ export interface WorldCollectionDef {
 /* ------------------------------ Templates ------------------------------- */
 
 export const TEMPLATES: TemplateDef[] = [
+    { id: 'blank', name: 'Blank', description: 'An empty scene, ready for your own objects and lighting.' },
     { id: 'product', name: 'Product Showcase', description: 'Pedestal, hero object, studio lighting' },
     { id: 'dataviz', name: 'Data Visualization', description: 'Bars, grid ground, soft light' },
     { id: 'genart', name: 'Generative Art', description: 'Orbiting forms, atmosphere, fog' },
@@ -49,6 +50,8 @@ function doc(templateId: string, nodes: any[], world: any = {}, materials: any[]
 
 export function buildTemplateDocument(templateId: string): SceneDocument {
     switch (templateId) {
+        case 'blank':
+            return doc('blank', []);
         case 'product':
             return doc('product', [
                 { id: 'pedestal', name: 'Pedestal', kind: 'mesh', geometry: { type: 'cylinder', radiusTop: 1.1, radiusBottom: 1.2, height: 0.6 }, transform: { position: { x: 0, y: 0.3, z: 0 } }, materialId: 'mat_glass' },

@@ -152,6 +152,15 @@ function applyOne(doc: SceneDocument, op: SceneOperation, errors: string[]): Sce
             if (n.locked) { errors.push(`node.setGeometry: "${op.id}" is locked`); return doc; }
             return { ...doc, nodes: doc.nodes.map(x => x.id === op.id ? { ...x, geometry: op.geometry } : x) };
         }
+        case 'node.setLight':
+        case 'node.setCamera': {
+            const node = findNode(doc, op.id);
+            const kind = op.op === 'node.setLight' ? 'light' : 'camera';
+            if (!node || node.kind !== kind || !node[kind]) { errors.push(`${op.op}: ${kind} "${op.id}" not found`); return doc; }
+            if (node.locked) { errors.push(`${op.op}: "${op.id}" is locked`); return doc; }
+            const patch = op.op === 'node.setLight' ? op.light : op.camera;
+            return { ...doc, nodes: doc.nodes.map(n => n.id === op.id ? { ...n, [kind]: { ...n[kind], ...patch } } : n) };
+        }
         case 'material.define': {
             if (op.material.id && doc.materials.some(m => m.id === op.material.id)) {
                 errors.push(`material.define: id "${op.material.id}" already exists`);
@@ -234,6 +243,10 @@ function applyOne(doc: SceneDocument, op: SceneOperation, errors: string[]): Sce
             const track = clip.tracks.find(t => t.path === op.path);
             if (!track || !track.keyframes.some(k => k.time === op.fromTime)) {
                 errors.push(`animation.setKeyTime: no key at t=${op.fromTime} on "${op.path}"`);
+                return doc;
+            }
+            if (op.toTime > clip.duration || track.keyframes.some(k => k.time !== op.fromTime && Math.abs(k.time - op.toTime) < 1e-6)) {
+                errors.push('Choose an unoccupied keyframe time within the clip.');
                 return doc;
             }
             const tracks = clip.tracks.map(t => t.path === op.path

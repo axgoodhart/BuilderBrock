@@ -19,7 +19,7 @@ export type RuntimeCommand =
     | { type: 'setSnap'; enabled: boolean; translateSnap: number; rotateSnap: number; scaleSnap: number }
     | { type: 'play'; nodeId?: string; clipId?: string }
     | { type: 'pause' }
-    | { type: 'seek'; time: number }
+    | { type: 'seek'; time: number; nodeId?: string; clipId?: string }
     | { type: 'physicsStart' }
     | { type: 'physicsPause' }
     | { type: 'physicsStep' }
