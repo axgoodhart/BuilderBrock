@@ -895,7 +895,7 @@ const OmneonWorkspace: React.FC<OmneonWorkspaceProps> = ({ project, artifact, on
                 )}
             </div>
             {collectionKind && <CollectionPicker key={collectionKind} kind={collectionKind} document={document} error={lastError} onClose={() => setCollectionKind(null)} onApply={(ops, name) => commitOps(ops, { source: 'template', prompt: `Apply ${name}`, expectedDocument: document })} />
-        </div>
+  }  </div>
     );
 };
 
